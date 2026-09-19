@@ -35,6 +35,34 @@ function normalizarPreco(preco) {
     return Number(valor.toFixed(2));
 }
 
+const TIPOS_APLICACAO_PRODUTO = [
+    'PEDIDO',
+    'MARMITA'
+];
+
+function normalizarTipoAplicacao(tipoAplicacao, padrao = null) {
+    if (
+        tipoAplicacao === null ||
+        tipoAplicacao === undefined ||
+        String(tipoAplicacao).trim() === ''
+    ) {
+        return padrao;
+    }
+
+    const tipo = String(tipoAplicacao)
+        .trim()
+        .toUpperCase();
+
+    if (!TIPOS_APLICACAO_PRODUTO.includes(tipo)) {
+        throw lancarErro(
+            'O tipo de aplicação do produto deve ser PEDIDO ou MARMITA.',
+            400
+        );
+    }
+
+    return tipo;
+}
+
 function formatarProdutoParaResposta(produto) {
     if (!produto) {
         return produto;
@@ -68,7 +96,17 @@ async function buscarCategoriaValida(categoriaId, trx = null) {
  */
 export const listarProdutosCardapio = async (req, res, next) => {
     try {
-        const { categoria_id } = req.query;
+        const { categoria_id, tipo_aplicacao } = req.query;
+
+        let tipoAplicacaoNormalizado = null;
+
+        try {
+            tipoAplicacaoNormalizado = normalizarTipoAplicacao(
+                tipo_aplicacao
+            );
+        } catch (error) {
+            return next(error);
+        }
 
         const query = connection('produtos as p')
             .join(
@@ -83,6 +121,7 @@ export const listarProdutosCardapio = async (req, res, next) => {
                 'p.descricao',
                 'p.preco',
                 'p.ordem_exibicao',
+                'p.tipo_aplicacao',
                 'cp.id as categoria_id',
                 'cp.nome as categoria_nome',
                 'cp.descricao as categoria_descricao',
@@ -104,6 +143,13 @@ export const listarProdutosCardapio = async (req, res, next) => {
             query.where('p.categoria_produto_id', categoriaId);
         }
 
+        if (tipoAplicacaoNormalizado) {
+            query.where(
+                'p.tipo_aplicacao',
+                tipoAplicacaoNormalizado
+            );
+        }
+
         const produtos = await query
             .orderBy('cp.ordem_exibicao', 'ASC')
             .orderBy('cp.nome', 'ASC')
@@ -119,6 +165,7 @@ export const listarProdutosCardapio = async (req, res, next) => {
                     nome: produto.categoria_nome,
                     descricao: produto.categoria_descricao,
                     ordem_exibicao: produto.categoria_ordem_exibicao,
+                    tipo_aplicacao: produto.tipo_aplicacao,
                     produtos: []
                 });
             }
@@ -154,6 +201,7 @@ export const listarProdutosAdmin = async (req, res, next) => {
             limit = 10,
             search = '',
             categoria_id,
+            tipo_aplicacao,
             status = 'todos',
             disponibilidade = 'todos',
             excluidos = 'false',
@@ -218,6 +266,25 @@ export const listarProdutosAdmin = async (req, res, next) => {
             query.where('p.categoria_produto_id', categoriaId);
         }
 
+        if (
+            tipo_aplicacao !== undefined &&
+            String(tipo_aplicacao).trim() !== ''
+        ) {
+            let tipoAplicacaoNormalizado;
+
+            try {
+                tipoAplicacaoNormalizado =
+                    normalizarTipoAplicacao(tipo_aplicacao);
+            } catch (error) {
+                return next(error);
+            }
+
+            query.where(
+                'p.tipo_aplicacao',
+                tipoAplicacaoNormalizado
+            );
+        }
+
         if (String(search).trim()) {
             const termo = `%${String(search).trim()}%`;
 
@@ -265,7 +332,8 @@ export const listarProdutosAdmin = async (req, res, next) => {
                 'p.ordem_exibicao',
                 'p.criado_em',
                 'p.atualizado_em',
-                'p.deletado_em'
+                'p.deletado_em',
+                'p.tipo_aplicacao'
             ])
             .orderBy(colunaOrdenacao, direcao)
             .orderBy('p.id', 'ASC')
@@ -319,7 +387,8 @@ export const buscarProdutoPorId = async (req, res, next) => {
                 'p.ordem_exibicao',
                 'p.criado_em',
                 'p.atualizado_em',
-                'p.deletado_em'
+                'p.deletado_em',
+                'p.tipo_aplicacao'
             ])
             .where('p.id', id)
             .first();
@@ -352,6 +421,9 @@ export const criarProduto = async (req, res, next) => {
         nome,
         descricao = null,
         preco,
+
+        tipo_aplicacao = 'PEDIDO',
+
         ativo = true,
         disponivel_hoje = true,
         ordem_exibicao = 0
@@ -365,6 +437,18 @@ export const criarProduto = async (req, res, next) => {
 
     if (!nome || !String(nome).trim()) {
         return next(lancarErro('O nome do produto é obrigatório.', 400));
+    }
+
+    let tipoAplicacaoNormalizado;
+
+    try {
+        tipoAplicacaoNormalizado =
+            normalizarTipoAplicacao(
+                tipo_aplicacao,
+                'PEDIDO'
+            );
+    } catch (error) {
+        return next(error);
     }
 
     if (ativo !== undefined && typeof ativo !== 'boolean') {
@@ -431,6 +515,7 @@ export const criarProduto = async (req, res, next) => {
                 nome: nomeNormalizado,
                 descricao: descricaoNormalizada,
                 preco: precoNormalizado,
+                tipo_aplicacao: tipoAplicacaoNormalizado,
                 ativo,
                 disponivel_hoje: disponibilidadeFinal,
                 ordem_exibicao: ordem
