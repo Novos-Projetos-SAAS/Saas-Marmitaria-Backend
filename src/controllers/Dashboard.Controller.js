@@ -89,6 +89,15 @@ export const buscarDashboard = async (req, res, next) => {
 
         filtrarPeriodo(tamanhosQuery, dataInicio, dataFim);
 
+        const marmitasEspeciaisQuery = connection("itens_pedido as ip")
+            .join("pedidos as p", "p.id", "=", "ip.pedido_id")
+            .leftJoin("marmitas_especiais as me", "me.id", "=", "ip.marmita_especial_id")
+            .whereNotNull("ip.marmita_especial_id")
+            .whereNull("p.deletado_em")
+            .whereNot("p.status", STATUS_CANCELADO);
+
+        filtrarPeriodo(marmitasEspeciaisQuery, dataInicio, dataFim);
+
         const alimentosQuery = connection("composicao_item_pedido as cip")
             .join("itens_pedido as ip", "ip.id", "=", "cip.item_pedido_id")
             .join("pedidos as p", "p.id", "=", "ip.pedido_id")
@@ -121,6 +130,7 @@ export const buscarDashboard = async (req, res, next) => {
             ultimoPedido,
             serieResultado,
             tamanhos,
+            marmitasEspeciais,
             alimentos,
             metodosPagamento,
             tiposEntrega,
@@ -176,6 +186,19 @@ export const buscarDashboard = async (req, res, next) => {
                 .orderBy("quantidade", "desc")
                 .orderBy("tm.nome", "asc")
                 .limit(6),
+            marmitasEspeciaisQuery
+                .select(
+                    connection.raw(
+                        "COALESCE(ip.nome_item_snapshot, me.nome, 'Marmita Especial') AS nome"
+                    )
+                )
+                .sum({ quantidade: "ip.quantidade" })
+                .groupByRaw(
+                    "COALESCE(ip.nome_item_snapshot, me.nome, 'Marmita Especial')"
+                )
+                .orderBy("quantidade", "desc")
+                .orderBy("nome", "asc")
+                .limit(4),
             alimentosQuery
                 .groupBy("a.id", "a.nome")
                 .select("a.nome")
@@ -229,6 +252,7 @@ export const buscarDashboard = async (req, res, next) => {
                 graficos: {
                     serie_diaria: serieDiaria,
                     tamanhos_marmita: normalizarLista(tamanhos, "quantidade"),
+                    marmitas_especiais: normalizarLista(marmitasEspeciais, "quantidade"),
                     alimentos: normalizarLista(alimentos, "quantidade"),
                     metodos_pagamento: normalizarLista(metodosPagamento, "quantidade"),
                     tipos_entrega: normalizarLista(tiposEntrega, "quantidade"),
