@@ -5,6 +5,7 @@ import {
     calcularTotalPedido,
     deCentavos,
     inserirMarmitasPedido,
+    inserirMarmitasEspeciaisPedido,
     inserirProdutosPedido,
     normalizarTelefone,
     selecionarMarmitasJson,
@@ -28,6 +29,7 @@ export const criarPedido = async (req, res, next) => {
             precisa_troco = false,
             troco_para = null,
             marmitas = [],
+            marmitas_especiais = [],
             produtos = []
         } = req.body || {};
 
@@ -59,12 +61,12 @@ export const criarPedido = async (req, res, next) => {
             }
         }
 
-        if (!Array.isArray(marmitas) || !Array.isArray(produtos)) {
-            lancarErro("Marmitas e produtos devem ser enviados como listas.", 400);
+        if (!Array.isArray(marmitas) || !Array.isArray(marmitas_especiais) || !Array.isArray(produtos)) {
+            lancarErro("Marmitas, marmitas especiais e produtos devem ser enviados como listas.", 400);
         }
 
-        if (marmitas.length === 0) {
-            lancarErro("Para finalizar o pedido é obrigatório adicionar pelo menos uma marmita com alimentos.", 400);
+        if (marmitas.length === 0 && marmitas_especiais.length === 0) {
+            lancarErro("Para finalizar o pedido é obrigatório adicionar pelo menos uma marmita.", 400);
         }
 
         telefone_cliente = normalizarTelefone(telefone_cliente);
@@ -101,8 +103,14 @@ export const criarPedido = async (req, res, next) => {
             .returning("*");
 
         const totalMarmitasCentavos = await inserirMarmitasPedido({ pedidoId: pedido.id, marmitas, trx });
+        const totalMarmitasEspeciaisCentavos = await inserirMarmitasEspeciaisPedido({
+            pedidoId: pedido.id,
+            marmitasEspeciais: marmitas_especiais,
+            trx,
+            exigirPrecoReferencia: !req.usuario
+        });
         const totalProdutosCentavos = await inserirProdutosPedido({ pedidoId: pedido.id, produtos, trx, exigirPrecoReferencia: !req.usuario });
-        const valorTotalCentavos = totalMarmitasCentavos + totalProdutosCentavos;
+        const valorTotalCentavos = totalMarmitasCentavos + totalMarmitasEspeciaisCentavos + totalProdutosCentavos;
         const valorTotalPedido = deCentavos(valorTotalCentavos);
 
         if (Boolean(precisa_troco) && valorTrocoNumerico !== null) {
@@ -129,8 +137,10 @@ export const criarPedido = async (req, res, next) => {
                     pedido_id: pedido.id,
                     total: valorTotalPedido,
                     total_marmitas: deCentavos(totalMarmitasCentavos),
+                    total_marmitas_especiais: deCentavos(totalMarmitasEspeciaisCentavos),
                     total_produtos: deCentavos(totalProdutosCentavos),
-                    quantidade_marmitas: marmitas.length,
+                    quantidade_marmitas: marmitas.reduce((total, marmita) => total + Number(marmita?.quantidade || 0), 0),
+                    quantidade_marmitas_especiais: marmitas_especiais.reduce((total, marmita) => total + Number(marmita?.quantidade || 0), 0),
                     quantidade_produtos: produtos.reduce((total, produto) => total + Number(produto?.quantidade || 0), 0)
                 })
             });
@@ -154,6 +164,7 @@ export const criarPedido = async (req, res, next) => {
                 pedido_id: pedido.id,
                 total: valorTotalPedido,
                 total_marmitas: deCentavos(totalMarmitasCentavos),
+                total_marmitas_especiais: deCentavos(totalMarmitasEspeciaisCentavos),
                 total_produtos: deCentavos(totalProdutosCentavos)
             }
         });
@@ -177,6 +188,7 @@ export const editarPedido = async (req, res, next) => {
             metodo_pagamento_id,
             observacoes,
             marmitas,
+            marmitas_especiais,
             produtos
         } = req.body || {};
 
@@ -184,12 +196,12 @@ export const editarPedido = async (req, res, next) => {
             lancarErro("Marmitas deve ser uma lista.", 400);
         }
 
-        if (produtos !== undefined && !Array.isArray(produtos)) {
-            lancarErro("Produtos deve ser uma lista.", 400);
+        if (marmitas_especiais !== undefined && !Array.isArray(marmitas_especiais)) {
+            lancarErro("Marmitas especiais deve ser uma lista.", 400);
         }
 
-        if (marmitas !== undefined && marmitas.length === 0) {
-            lancarErro("O pedido deve possuir pelo menos uma marmita com alimentos.", 400);
+        if (produtos !== undefined && !Array.isArray(produtos)) {
+            lancarErro("Produtos deve ser uma lista.", 400);
         }
 
         const telefoneNormalizado = telefone_cliente !== undefined ? normalizarTelefone(telefone_cliente) : undefined;
@@ -218,6 +230,7 @@ export const editarPedido = async (req, res, next) => {
                 .where({ pedido_id: id })
                 .whereNotNull("tamanho_marmita_id")
                 .whereNull("produto_id")
+                .whereNull("marmita_especial_id")
                 .select("id");
 
             const idsMarmitas = itensMarmitas.map((item) => item.id);
@@ -237,12 +250,32 @@ export const editarPedido = async (req, res, next) => {
             await inserirMarmitasPedido({ pedidoId: Number(id), marmitas, trx });
         }
 
+        if (marmitas_especiais !== undefined) {
+            await connection("itens_pedido")
+                .transacting(trx)
+                .where({ pedido_id: id })
+                .whereNotNull("marmita_especial_id")
+                .whereNull("tamanho_marmita_id")
+                .whereNull("produto_id")
+                .del();
+
+            if (marmitas_especiais.length > 0) {
+                await inserirMarmitasEspeciaisPedido({
+                    pedidoId: Number(id),
+                    marmitasEspeciais: marmitas_especiais,
+                    trx,
+                    exigirPrecoReferencia: false
+                });
+            }
+        }
+
         if (produtos !== undefined) {
             await connection("itens_pedido")
                 .transacting(trx)
                 .where({ pedido_id: id })
                 .whereNotNull("produto_id")
                 .whereNull("tamanho_marmita_id")
+                .whereNull("marmita_especial_id")
                 .del();
 
             if (produtos.length > 0) {
@@ -250,16 +283,25 @@ export const editarPedido = async (req, res, next) => {
             }
         }
 
-        const marmitaComAlimento = await connection("itens_pedido as ip")
+        const marmitaPersonalizadaComAlimento = await connection("itens_pedido as ip")
             .transacting(trx)
             .join("composicao_item_pedido as cip", "cip.item_pedido_id", "=", "ip.id")
             .where("ip.pedido_id", id)
             .whereNotNull("ip.tamanho_marmita_id")
             .whereNull("ip.produto_id")
+            .whereNull("ip.marmita_especial_id")
             .first("ip.id");
 
-        if (!marmitaComAlimento) {
-            lancarErro("O pedido deve possuir pelo menos uma marmita com alimentos. Produtos não podem ser comprados separadamente.", 400);
+        const marmitaEspecialExistente = await connection("itens_pedido as ip")
+            .transacting(trx)
+            .where("ip.pedido_id", id)
+            .whereNotNull("ip.marmita_especial_id")
+            .whereNull("ip.tamanho_marmita_id")
+            .whereNull("ip.produto_id")
+            .first("ip.id");
+
+        if (!marmitaPersonalizadaComAlimento && !marmitaEspecialExistente) {
+            lancarErro("O pedido deve possuir pelo menos uma marmita. Produtos não podem ser comprados separadamente.", 400);
         }
 
         const novoValorTotalCentavos = await calcularTotalPedido(id, trx);

@@ -1237,6 +1237,19 @@ function lancarErroProdutosAlterados(produtos) {
 }
 
 /**
+ * Informa ao Frontend quando uma marmita especial ficou indisponível
+ * ou teve o preço alterado antes da finalização.
+ */
+function lancarErroMarmitasEspeciaisAlteradas(marmitasEspeciais) {
+    const error = new Error('Uma ou mais marmitas especiais do seu pedido foram alteradas enquanto você fazia o pedido. Revise as alterações para continuar.');
+    error.statusCode = 409;
+    error.code = 'MARMITAS_ESPECIAIS_ALTERADAS';
+    error.details = { marmitas_especiais: marmitasEspeciais };
+    error.exposeDetails = true;
+    throw error;
+}
+
+/**
  * ============================================================
  * VALIDAÇÃO DOS ALIMENTOS DA MARMITA
  * ============================================================
@@ -1407,6 +1420,7 @@ export async function inserirMarmitasPedido({ pedidoId, marmitas, trx }) {
                 pedido_id: pedidoId,
                 tamanho_marmita_id: marmita.tamanhoId,
                 produto_id: null,
+                marmita_especial_id: null,
                 quantidade: marmita.quantidade,
                 preco_unitario: deCentavos(marmita.precoUnitarioCentavos),
                 subtotal: deCentavos(subtotalCentavos),
@@ -1420,6 +1434,185 @@ export async function inserirMarmitasPedido({ pedidoId, marmitas, trx }) {
         }));
 
         await connection('composicao_item_pedido').transacting(trx).insert(composicao);
+        totalCentavos += subtotalCentavos;
+    }
+
+    return totalCentavos;
+}
+
+/**
+ * ============================================================
+ * AGRUPAR MARMITAS ESPECIAIS
+ * ============================================================
+ */
+function agruparMarmitasEspeciais(marmitasEspeciais, exigirPrecoReferencia = false) {
+    const agrupadas = new Map();
+
+    for (const item of marmitasEspeciais) {
+        const marmitaEspecialId = Number(item?.marmita_especial_id);
+        const quantidade = validarQuantidade(item?.quantidade, 'marmitas especiais');
+
+        if (!Number.isInteger(marmitaEspecialId) || marmitaEspecialId <= 0) {
+            lancarErro('O pedido possui uma marmita especial inválida.', 400);
+        }
+
+        const possuiPrecoReferencia = item?.preco_referencia !== null &&
+            item?.preco_referencia !== undefined &&
+            String(item.preco_referencia).trim() !== '';
+
+        if (exigirPrecoReferencia && !possuiPrecoReferencia) {
+            lancarErro('O preço de referência da marmita especial não foi informado. Atualize o carrinho e tente novamente.', 400);
+        }
+
+        let precoReferencia = null;
+
+        if (possuiPrecoReferencia) {
+            precoReferencia = Number(String(item.preco_referencia).replace(',', '.'));
+
+            if (!Number.isFinite(precoReferencia) || precoReferencia <= 0) {
+                lancarErro('O pedido possui um preço de marmita especial inválido.', 400);
+            }
+
+            precoReferencia = Number(precoReferencia.toFixed(2));
+        }
+
+        const existente = agrupadas.get(marmitaEspecialId);
+
+        if (existente) {
+            if (
+                existente.preco_referencia !== null &&
+                precoReferencia !== null &&
+                Math.round(existente.preco_referencia * 100) !== Math.round(precoReferencia * 100)
+            ) {
+                lancarErro('A mesma marmita especial foi enviada com preços de referência diferentes.', 400);
+            }
+
+            existente.quantidade += quantidade;
+            continue;
+        }
+
+        agrupadas.set(marmitaEspecialId, {
+            marmita_especial_id: marmitaEspecialId,
+            quantidade,
+            preco_referencia: precoReferencia
+        });
+    }
+
+    return Array.from(agrupadas.values());
+}
+
+/**
+ * ============================================================
+ * INSERIR MARMITAS ESPECIAIS
+ * ============================================================
+ *
+ * O preço, nome e descrição gravados no pedido são confirmados
+ * pelo Backend no momento da compra.
+ */
+export async function inserirMarmitasEspeciaisPedido({
+    pedidoId,
+    marmitasEspeciais,
+    trx,
+    exigirPrecoReferencia = false
+}) {
+    if (!Array.isArray(marmitasEspeciais)) {
+        lancarErro('Marmitas especiais deve ser uma lista.', 400);
+    }
+
+    if (marmitasEspeciais.length === 0) return 0;
+
+    const agrupadas = agruparMarmitasEspeciais(marmitasEspeciais, exigirPrecoReferencia);
+    const ids = agrupadas.map((item) => item.marmita_especial_id);
+
+    const marmitasBanco = await connection('marmitas_especiais')
+        .transacting(trx)
+        .select('id', 'nome', 'descricao', 'preco', 'ativo', 'deletado_em')
+        .whereIn('id', ids)
+        .forShare();
+
+    const marmitasPorId = new Map(
+        marmitasBanco.map((marmita) => [Number(marmita.id), marmita])
+    );
+
+    const alteracoes = [];
+
+    for (const item of agrupadas) {
+        const marmita = marmitasPorId.get(item.marmita_especial_id);
+
+        if (!marmita) {
+            alteracoes.push({
+                id: item.marmita_especial_id,
+                nome: null,
+                tipo: 'INDISPONIVEL',
+                motivo: 'A marmita especial não existe mais no cardápio.'
+            });
+            continue;
+        }
+
+        if (marmita.deletado_em) {
+            alteracoes.push({
+                id: item.marmita_especial_id,
+                nome: marmita.nome,
+                tipo: 'INDISPONIVEL',
+                motivo: 'A marmita especial foi removida do cardápio.'
+            });
+            continue;
+        }
+
+        if (marmita.ativo !== true) {
+            alteracoes.push({
+                id: item.marmita_especial_id,
+                nome: marmita.nome,
+                tipo: 'INDISPONIVEL',
+                motivo: 'A marmita especial está inativa.'
+            });
+            continue;
+        }
+
+        if (item.preco_referencia !== null) {
+            const precoAnteriorCentavos = Math.round(item.preco_referencia * 100);
+            const precoAtualCentavos = paraCentavos(marmita.preco);
+
+            if (precoAnteriorCentavos !== precoAtualCentavos) {
+                alteracoes.push({
+                    id: item.marmita_especial_id,
+                    nome: marmita.nome,
+                    descricao_atual: marmita.descricao || null,
+                    tipo: 'PRECO_ALTERADO',
+                    motivo: 'O preço desta marmita especial foi alterado.',
+                    preco_anterior: deCentavos(precoAnteriorCentavos),
+                    preco_atual: deCentavos(precoAtualCentavos)
+                });
+            }
+        }
+    }
+
+    if (alteracoes.length > 0) {
+        lancarErroMarmitasEspeciaisAlteradas(alteracoes);
+    }
+
+    let totalCentavos = 0;
+
+    for (const item of agrupadas) {
+        const marmita = marmitasPorId.get(item.marmita_especial_id);
+        const precoUnitarioCentavos = paraCentavos(marmita.preco);
+        const subtotalCentavos = precoUnitarioCentavos * item.quantidade;
+
+        await connection('itens_pedido')
+            .transacting(trx)
+            .insert({
+                pedido_id: pedidoId,
+                tamanho_marmita_id: null,
+                produto_id: null,
+                marmita_especial_id: marmita.id,
+                quantidade: item.quantidade,
+                preco_unitario: deCentavos(precoUnitarioCentavos),
+                subtotal: deCentavos(subtotalCentavos),
+                observacao: null,
+                nome_item_snapshot: marmita.nome,
+                descricao_item_snapshot: marmita.descricao || null
+            });
+
         totalCentavos += subtotalCentavos;
     }
 
@@ -1647,6 +1840,7 @@ export async function inserirProdutosPedido({ pedidoId, produtos, trx, exigirPre
                 pedido_id: pedidoId,
                 tamanho_marmita_id: null,
                 produto_id: produto.id,
+                marmita_especial_id: null,
                 quantidade: item.quantidade,
                 preco_unitario: deCentavos(precoUnitarioCentavos),
                 subtotal: deCentavos(subtotalCentavos)
@@ -1685,12 +1879,16 @@ export function selecionarMarmitasJson() {
                 FROM (
                     SELECT
                         ip.id,
+                        'PERSONALIZADA'::text AS tipo,
                         ip.tamanho_marmita_id,
-                        tm.nome AS tamanho,
+                        NULL::integer AS marmita_especial_id,
+                        tm.nome::text AS tamanho,
+                        NULL::text AS nome,
+                        NULL::text AS descricao,
                         ip.quantidade,
                         ip.preco_unitario,
                         ip.subtotal,
-                        ip.observacao, -- <-- ADICIONADO AQUI PARA BUSCAR A OBSERVAÇÃO
+                        ip.observacao,
                         COALESCE(
                             (
                                 SELECT json_agg(
@@ -1710,6 +1908,29 @@ export function selecionarMarmitasJson() {
                     WHERE ip.pedido_id = pedidos.id
                       AND ip.tamanho_marmita_id IS NOT NULL
                       AND ip.produto_id IS NULL
+                      AND ip.marmita_especial_id IS NULL
+
+                    UNION ALL
+
+                    SELECT
+                        ip.id,
+                        'ESPECIAL'::text AS tipo,
+                        NULL::integer AS tamanho_marmita_id,
+                        ip.marmita_especial_id,
+                        NULL::text AS tamanho,
+                        COALESCE(ip.nome_item_snapshot, me.nome)::text AS nome,
+                        COALESCE(ip.descricao_item_snapshot, me.descricao)::text AS descricao,
+                        ip.quantidade,
+                        ip.preco_unitario,
+                        ip.subtotal,
+                        ip.observacao,
+                        '[]'::json AS alimentos
+                    FROM itens_pedido AS ip
+                    LEFT JOIN marmitas_especiais AS me ON me.id = ip.marmita_especial_id
+                    WHERE ip.pedido_id = pedidos.id
+                      AND ip.tamanho_marmita_id IS NULL
+                      AND ip.produto_id IS NULL
+                      AND ip.marmita_especial_id IS NOT NULL
                 ) AS item
             ),
             '[]'::json
@@ -1718,6 +1939,8 @@ export function selecionarMarmitasJson() {
 }
 
 /**
+ * ============================================================
+ * JSON DOS PRODUTOS/**
  * ============================================================
  * JSON DOS PRODUTOS
  * ============================================================
@@ -1744,6 +1967,7 @@ export function selecionarProdutosJson() {
                     WHERE ip.pedido_id = pedidos.id
                       AND ip.produto_id IS NOT NULL
                       AND ip.tamanho_marmita_id IS NULL
+                      AND ip.marmita_especial_id IS NULL
                 ) AS item
             ),
             '[]'::json
