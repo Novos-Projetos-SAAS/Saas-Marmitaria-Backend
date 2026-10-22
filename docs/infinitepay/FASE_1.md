@@ -38,6 +38,7 @@ Campos permitidos: handle, api_key, remove_api_key, ativo (apenas false), assure
 - remove_api_key=true desconecta a configuração corrente e preserva versões históricas.
 - Alterar handle com chave corrente exige substituição ou remoção explícita.
 - Salvar não valida a conta no provedor e não ativa a integração.
+- Handle aceita texto limitado a 150 caracteres, sem controles/quebras de linha, removendo o $ inicial. Não se presume uma gramática ASCII do provedor; a sintaxe real continua pendente de homologação.
 
 ## Cifra e rotação
 
@@ -50,6 +51,7 @@ O segredo em texto necessariamente existe brevemente na memória do servidor; n�
 ## Logs e compatibilidade
 
 O logger geral grava somente método, rota estática conhecida, usuário interno e status. Não grava URL completa, query, body, headers, stack, SQL ou erro bruto. Mensagens 5xx são genéricas. Conflitos estruturados de cardápio mantêm seus códigos e campos públicos necessários.
+O prefixo de rota é capturado no mount antes do unwind do Express, mantendo o endpoint reconhecível no handler global. As mensagens estáticas de sessão expirada/token inválido continuam públicas, sem eco do JWT.
 
 O cadastro da empresa rejeita campos desconhecidos, ignora id/timestamps reenviados pelo formulário legado e registra apenas nomes de campos alterados. Credenciais financeiras devem usar exclusivamente a rota dedicada. Contrato de impressora/cadastro válido preservado.
 
@@ -73,6 +75,7 @@ O runner é o node:test nativo, sem isolamento em processos e com execução seq
 - JWT, RBAC, usuário/cargo ativo, CSRF, CORS e escrita;
 - falhas reais de banco e chave malformada, console/auditoria/resposta sem sentinelas;
 - compatibilidade do PDV e pedidos remotos offline, loja fechada e alimento indisponível.
+- produto alterado, marmita especial indisponível, mensagens de sessão e tentativa histórica vinculada à credencial anterior após troca de conta.
 
 O teste negativo de rollback emite mensagem esperada do Knex sobre bloqueio: o teste passa porque recusar a destruição é o resultado exigido. Isso não é migration de produção executada.
 

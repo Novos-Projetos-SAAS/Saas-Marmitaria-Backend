@@ -86,27 +86,33 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
 }));
 
 app.use(limitadorGeral);
-app.use('/alimentos', AlimentosRoutes)
-app.use('/auth', AuthRoutes)
-app.use('/categorias-alimentos', CategoriasAlimentosRoutes)
-app.use('/metodos-pagamentos', MetodosPagamentosRoutes)
-app.use('/niveis-acesso', NiveisAcessoRoutes)
-app.use('/pedidos', PedidosRoutes)
-app.use('/permissoes', PermissoesRoutes)
-app.use('/status-loja', StatusLojaRoutes)
-app.use('/tamanhos-marmitas', TamanhosMarmitasRoutes)
-app.use('/marmitas-especiais', MarmitasEspeciaisRoutes)
-app.use('/usuarios', UsuariosRoutes)
-app.use('/relatorios', RelatoriosRoutes)
-app.use('/dashboard', DashboardRoutes)
+// Express restores baseUrl before the global error handler. Preserve only this
+// server-owned static prefix, never originalUrl, query or path parameter values.
+const mountRoutes = (prefix, routes) => app.use(prefix, (req, res, next) => {
+    req.auditBase = prefix;
+    next();
+}, routes);
+mountRoutes('/alimentos', AlimentosRoutes)
+mountRoutes('/auth', AuthRoutes)
+mountRoutes('/categorias-alimentos', CategoriasAlimentosRoutes)
+mountRoutes('/metodos-pagamentos', MetodosPagamentosRoutes)
+mountRoutes('/niveis-acesso', NiveisAcessoRoutes)
+mountRoutes('/pedidos', PedidosRoutes)
+mountRoutes('/permissoes', PermissoesRoutes)
+mountRoutes('/status-loja', StatusLojaRoutes)
+mountRoutes('/tamanhos-marmitas', TamanhosMarmitasRoutes)
+mountRoutes('/marmitas-especiais', MarmitasEspeciaisRoutes)
+mountRoutes('/usuarios', UsuariosRoutes)
+mountRoutes('/relatorios', RelatoriosRoutes)
+mountRoutes('/dashboard', DashboardRoutes)
 
 // Novas APIs.
-app.use('/categorias-produtos', CategoriasProdutosRoutes);
-app.use('/produtos', ProdutosRoutes);
-app.use('/keep-alive', KeepAliveRoutes);
-app.use('/configuracoes/infinitepay', InfinitepayConfigRoutes);
-app.use('/configuracoes', DadosEmpresaRoutes);
-app.use('/qz', QzRoutes);
+mountRoutes('/categorias-produtos', CategoriasProdutosRoutes);
+mountRoutes('/produtos', ProdutosRoutes);
+mountRoutes('/keep-alive', KeepAliveRoutes);
+mountRoutes('/configuracoes/infinitepay', InfinitepayConfigRoutes);
+mountRoutes('/configuracoes', DadosEmpresaRoutes);
+mountRoutes('/qz', QzRoutes);
 
 app.use(errorHandler)
 

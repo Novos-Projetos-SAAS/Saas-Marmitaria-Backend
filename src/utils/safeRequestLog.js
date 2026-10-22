@@ -11,7 +11,7 @@ export function safeRequestLog(req = {}) {
     const route = typeof req.route?.path === 'string' ? req.route.path : null;
     return {
         method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(req.method) ? req.method : 'UNKNOWN',
-        route: route ? String(req.baseUrl || '') + route : '[unmatched]',
+        route: route ? String(req.auditBase ?? req.baseUrl ?? '') + route : '[unmatched]',
         usuario_id: Number.isSafeInteger(req.usuario?.id) ? req.usuario.id : null
     };
 }

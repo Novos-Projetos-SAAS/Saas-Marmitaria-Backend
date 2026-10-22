@@ -25,7 +25,8 @@ export async function updateInfinitepayConfig(input, actor) {
     if (input.handle !== undefined) {
         if (typeof input.handle !== 'string') lancarErro('InfiniteTag inválida.',400);
         newHandle = input.handle.trim().replace(/^\$/, '');
-        if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,149}$/.test(newHandle)) lancarErro('InfiniteTag inválida.',400);
+        // Store bounded single-line input; provider-specific syntax is still unhomologated.
+        if (!newHandle || newHandle.length > 150 || /[\x00-\x1f\x7f\u2028\u2029]/u.test(newHandle)) lancarErro('InfiniteTag inválida.',400);
     }
     return connection.transaction(async trx => {
         const current = await trx('config_infinitepay').where({ id: 1 }).forUpdate().first();

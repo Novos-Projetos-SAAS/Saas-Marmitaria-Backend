@@ -30,9 +30,11 @@ export const verifyToken = (req, res, next) => {
         if (error.name === 'TokenExpiredError') {
             error.message = 'Sua sessão expirou. Por favor, faça login novamente.';
             error.statusCode = 401;
+            error.exposeMessage = true;
         } else if (error.name === 'JsonWebTokenError') {
             error.message = 'Token inválido.';
             error.statusCode = 401;
+            error.exposeMessage = true;
         }
 
         if (!error.statusCode) error.statusCode = 401;

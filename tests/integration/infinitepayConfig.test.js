@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import jwt from 'jsonwebtoken';
-import { createTestDatabase } from '../helpers/testDatabase.js';
+import { createTestDatabase, historicalOrder } from '../helpers/testDatabase.js';
 let f, server, base, appDb;
 let legacyPayload;
 const origin = 'http://localhost:3000';
@@ -85,6 +85,9 @@ test('config stores ciphertext, versioned account context and returns no key; Ph
     assert.deepEqual(value.data, { handle: 'synthetic-store', ativo: false, assured_installments: 0, has_api_key: true });
     assert.equal(JSON.stringify(value).includes(secret), false);
     const old = await f.db('infinitepay_credenciais').first();
+    const historical = await historicalOrder(f.db,{id:701,methodId:99});
+    const [attempt] = await f.db('pagamentos').insert({pedido_id:historical.id,tentativa_numero:1,order_nsu:'SYNTHETIC_HISTORICAL',
+        status:'AGUARDANDO',valor_centavos:2000,valid_until:'2030-01-01',credencial_id:old.id,handle_snapshot:old.handle}).returning('*');
     assert.notEqual(old.api_key_ciphertext, secret);
     assert.equal((await write({ ativo: true })).status, 400);
     assert.equal((await write({ handle: 'other-store' })).status, 400);
@@ -94,6 +97,9 @@ test('config stores ciphertext, versioned account context and returns no key; Ph
     assert.equal((await write({ handle: 'other-store', api_key: 'SYNTHETIC_REPLACEMENT' })).status, 200);
     assert.equal(await f.db('infinitepay_credenciais').count('* as n').first().then(r => Number(r.n)), 2);
     assert.equal((await f.db('infinitepay_credenciais').where({ id: old.id }).first()).handle, 'synthetic-store');
+    const historicalContext = await f.db('pagamentos as p').join('infinitepay_credenciais as c','c.id','p.credencial_id')
+        .where('p.id',attempt.id).select('p.handle_snapshot','c.handle').first();
+    assert.deepEqual(historicalContext,{handle_snapshot:'synthetic-store',handle:'synthetic-store'});
     await assert.rejects(f.db('infinitepay_credenciais').where({ id: old.id }).update({ handle: 'changed' }), /imutável/);
     assert.equal((await write({ remove_api_key: true })).status, 200);
     assert.equal((await (await request()).json()).data.has_api_key, false);
@@ -117,7 +123,27 @@ test('database and encryption errors leak no key in responses, console or persis
         const logs = await f.db('logs').select('*');
         assert.equal(JSON.stringify(logs).includes(secret), false);
         assert.equal(messages.join('').includes(secret), false);
+        const errorLogs = logs.filter(row=>row.acao==='SISTEMA.ERRO');
+        assert.equal(errorLogs.length,2);
+        assert.equal(errorLogs.every(row=>row.endpoint==='/configuracoes/infinitepay/'),true);
     } finally { console.error = originalError; }
+});
+
+test('known expired and invalid session messages remain actionable without exposing JWT values', async () => {
+    const expired = jwt.sign({id:1,cargo:'admin'},process.env.JWT_SECRET,{expiresIn:-60});
+    const r = await request(undefined,{headers:{Cookie:'token='+expired}});
+    assert.equal(r.status,401);
+    assert.equal((await r.json()).message,'Sua sessão expirou. Por favor, faça login novamente.');
+    const invalid = await request(undefined,{headers:{Cookie:'token=synthetic-invalid-token'}});
+    assert.equal(invalid.status,401);
+    assert.equal((await invalid.json()).message,'Token inválido.');
+});
+
+test('configuration accepts bounded single-line handles without assuming undocumented provider syntax', async () => {
+    const r = await write({handle:'lojação'});
+    assert.equal(r.status,200);
+    assert.equal((await r.json()).data.handle,'lojação');
+    assert.equal((await write({handle:'store\ninvalid'})).status,400);
 });
 
 test('company settings reject financial secrets before persistence and keep the printing configuration contract', async () => {
@@ -195,4 +221,26 @@ test('RBAC migration is idempotent and does not grant financial access to ordina
     const {csrf_token} = await r.json();
     const allowed = await request(undefined,{id:2,method:'PUT',body:{assured_installments:12},headers:{Origin:origin,'X-Infinitepay-CSRF':csrf_token}});
     assert.equal(allowed.status,200);
+});
+
+test('changed products and unavailable special meals preserve structured public conflict details', async () => {
+    const count = await f.db('pedidos').count('* as n').first();
+    const [category] = await f.db('categorias_produtos').insert({nome:'Bebidas sintéticas'}).returning('*');
+    const [product] = await f.db('produtos').insert({nome:'Água sintética',categoria_produto_id:category.id,preco:3,disponivel_hoje:true}).returning('*');
+    const changed = await fetch(base+'/pedidos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        ...legacyPayload,metodo_pagamento_id:31,produtos:[{produto_id:product.id,quantidade:1,preco_referencia:2}]
+    })});
+    assert.equal(changed.status,409);
+    const details = await changed.json();
+    assert.equal(details.code,'PRODUTOS_ALTERADOS');
+    assert.equal(details.details.produtos[0].preco_atual,3);
+    const [meal] = await f.db('marmitas_especiais').insert({nome:'Especial sintética',preco:25,ativo:false}).returning('*');
+    const unavailable = await fetch(base+'/pedidos',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+        ...legacyPayload,metodo_pagamento_id:31,marmitas_especiais:[{marmita_especial_id:meal.id,quantidade:1,preco_referencia:25}]
+    })});
+    assert.equal(unavailable.status,409);
+    const special = await unavailable.json();
+    assert.equal(special.code,'MARMITAS_ESPECIAIS_ALTERADAS');
+    assert.equal(special.details.marmitas_especiais[0].tipo,'INDISPONIVEL');
+    assert.deepEqual(await f.db('pedidos').count('* as n').first(),count);
 });
