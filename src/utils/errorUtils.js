@@ -8,5 +8,6 @@
 export const lancarErro = (mensagem, statusCode = 400) => {
     const error = new Error(mensagem);
     error.statusCode = statusCode;
+    error.exposeMessage = statusCode < 500;
     throw error;
 };

@@ -16,6 +16,7 @@ import UsuariosRoutes from './routes/Users.Routes.js'
 import RelatoriosRoutes from './routes/Relatorios.Routes.js'
 import KeepAliveRoutes from './routes/KeepAlive.Routes.js'
 import DadosEmpresaRoutes from './routes/DadosEmpresa.Routes.js'
+import InfinitepayConfigRoutes from './routes/InfinitepayConfig.Routes.js';
 import QzRoutes from './routes/Qz.Routes.js'
 import DashboardRoutes from './routes/Dashboard.Routes.js'
 import MarmitasEspeciaisRoutes from './routes/MarmitasEspeciais.Routes.js'
@@ -58,12 +59,15 @@ app.use(cors({
         if (allowedOrigins.includes(origin)) {
             callback(null, true);
         } else {
-            callback(new Error("Not allowed by CORS"));
+            const error = new Error("Origem não autorizada.");
+            error.statusCode = 403;
+            error.exposeMessage = true;
+            callback(error);
         }
     },
     credentials: true,
     // ADICIONE ISSO: Permite que o Front envie o Token no header
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Infinitepay-CSRF'],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
 }));
 
@@ -100,6 +104,7 @@ app.use('/dashboard', DashboardRoutes)
 app.use('/categorias-produtos', CategoriasProdutosRoutes);
 app.use('/produtos', ProdutosRoutes);
 app.use('/keep-alive', KeepAliveRoutes);
+app.use('/configuracoes/infinitepay', InfinitepayConfigRoutes);
 app.use('/configuracoes', DadosEmpresaRoutes);
 app.use('/qz', QzRoutes);
 

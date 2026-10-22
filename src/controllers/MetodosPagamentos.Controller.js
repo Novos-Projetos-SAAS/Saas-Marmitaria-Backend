@@ -9,7 +9,7 @@ export const listarMetodosDePagamentosAtivos = async (req, res, next) => {
             .where('ativo', true)
             .whereNull('deletado_em')
             .orderBy('nome', 'asc')
-            .select('id', 'nome')
+            .select('id', 'nome', 'codigo', 'tipo_financeiro')
         
         return res.status(200).json({
             status: 'success',

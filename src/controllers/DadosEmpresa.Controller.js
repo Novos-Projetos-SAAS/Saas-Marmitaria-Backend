@@ -1,5 +1,8 @@
 import connection from "../database/connection.js";
 import { isValidCPF, isValidCNPJ } from "../utils/validators.js";
+const companyFields = ['nome_proprietario','cpf_proprietario','telefone_proprietario','razao_social','nome_fantasia',
+    'cnpj','telefone_empresa','email_empresa','logo_url','cep','logradouro','numero','complemento','bairro','cidade',
+    'estado','imprimir_automaticamente','nome_impressora'];
 
 export const buscarDadosEmpresa = async (req, res, next) => {
     try {
@@ -43,7 +46,13 @@ export const buscarDadosEmpresaPublicos = async (req, res, next) => {
 };
 
 export const salvarDadosEmpresa = async (req, res, next) => {
-    const dados = req.body;
+    const body = req.body || {};
+    const allowed = new Set([...companyFields, 'id', 'criado_em', 'atualizado_em']);
+    if (Object.keys(body).some(key => !allowed.has(key))) {
+        return res.status(400).json({ status: 'fail', message: 'Campo de configuração não permitido.' });
+    }
+    // Legacy forms send id/timestamps back; ignore these server-owned fields.
+    const dados = Object.fromEntries(Object.entries(body).filter(([key]) => companyFields.includes(key)));
     const usuarioId = req.usuario?.id || null;
 
     if (dados.cnpj && dados.cnpj.trim() !== "") {
@@ -87,7 +96,7 @@ export const salvarDadosEmpresa = async (req, res, next) => {
 
             empresaRetorno = empresaAtualizada;
             logAcao = 'ATUALIZAR_EMPRESA';
-            logDescricao = `Configurações da empresa (${dados.nome_fantasia}) foram atualizadas.`;
+            logDescricao = 'Configurações da empresa atualizadas.';
             statusCode = 200;
             mensagemSucesso = 'Dados da empresa atualizados com sucesso.';
         } else {
@@ -100,7 +109,7 @@ export const salvarDadosEmpresa = async (req, res, next) => {
 
             empresaRetorno = novaEmpresa;
             logAcao = 'CADASTRAR_EMPRESA';
-            logDescricao = `Configurações da empresa (${dados.nome_fantasia}) foram cadastradas pela primeira vez.`;
+            logDescricao = 'Configurações da empresa cadastradas.';
             statusCode = 201;
             mensagemSucesso = 'Dados da empresa cadastrados com sucesso.';
         }
@@ -112,8 +121,8 @@ export const salvarDadosEmpresa = async (req, res, next) => {
             descricao: logDescricao,
             tipo: 'ACAO',
             metodo: req.method,
-            endpoint: req.originalUrl,
-            payload: JSON.stringify(dados) // Guarda o que o usuário preencheu no formulário
+            endpoint: '/configuracoes/empresa',
+            payload: JSON.stringify({ campos: Object.keys(dados) })
         });
 
         // Retorno final para o Frontend

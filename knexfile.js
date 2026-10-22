@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import { isolatedTestConnection } from './src/config/isolatedTestDatabase.js';
 
 /**
  * @type { Object.<string, import("knex").Knex.Config> }
@@ -18,6 +19,10 @@ const connection = process.env.DATABASE_URL
     };
 
 export default {
+  ...(process.env.NODE_ENV === 'test' ? {
+    test: { client: 'pg', connection: isolatedTestConnection(),
+      migrations: { directory: './src/database/migrations' } }
+  } : {}),
   development: {
     client: 'pg',
     connection,

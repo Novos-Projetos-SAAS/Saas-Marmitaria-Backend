@@ -144,3 +144,5 @@ vite.config.ts.timestamp-*
 
 
 # Chaves de segurança do Qz Tray
+*.pem
+.superpowers/
