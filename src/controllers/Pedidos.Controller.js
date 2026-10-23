@@ -1,6 +1,10 @@
 import connection from "../database/connection.js";
 import { lancarErro } from "../utils/errorUtils.js";
 import {
+    aplicarElegibilidadeOperacional, definirFluxoCriacao, exigirElegibilidadeOperacional,
+    exigirMutacaoSemCobranca, rejeitarControleFinanceiro
+} from '../utils/pedidoPaymentPolicy.js';
+import {
     buscarPedidoCompletoPorId,
     calcularTotalPedido,
     deCentavos,
@@ -18,6 +22,7 @@ export const criarPedido = async (req, res, next) => {
     let trx;
 
     try {
+        rejeitarControleFinanceiro(req.body);
         let {
             nome_cliente,
             telefone_cliente,
@@ -83,7 +88,12 @@ export const criarPedido = async (req, res, next) => {
 
         // Revalida as regras críticas no momento exato da criação do pedido.
         await validarLojaAberta(trx);
-        await validarMetodoPagamento(metodo_pagamento_id, trx);
+        const metodo = await validarMetodoPagamento(metodo_pagamento_id, trx);
+        const habilitado = process.env.INFINITEPAY_CHECKOUT_ENABLED === 'true';
+        const config = habilitado && res.locals.origemPedido === 'PUBLICO'
+            ? await trx('config_infinitepay').where({ id: 1 }).first('ativo') : null;
+        const fluxoPagamento = definirFluxoCriacao({ origem: res.locals.origemPedido, metodo,
+            habilitado, configAtiva: config?.ativo === true });
 
         const [pedido] = await connection("pedidos")
             .transacting(trx)
@@ -94,6 +104,7 @@ export const criarPedido = async (req, res, next) => {
                 tipo_pedido,
                 metodo_entrega,
                 metodo_pagamento_id,
+                fluxo_pagamento: fluxoPagamento,
                 status: "Pendente",
                 valor_total: 0,
                 observacoes: observacoesFormatadas,
@@ -180,6 +191,7 @@ export const editarPedido = async (req, res, next) => {
     let trx;
 
     try {
+        rejeitarControleFinanceiro(req.body);
         const { id } = req.params;
         const {
             nome_cliente,
@@ -223,6 +235,8 @@ export const editarPedido = async (req, res, next) => {
         if (pedido.status !== "Pendente") {
             lancarErro('Apenas pedidos com status "Pendente" podem ser editados.', 400);
         }
+
+        await exigirMutacaoSemCobranca(pedido, trx);
 
         if (marmitas !== undefined) {
             const itensMarmitas = await connection("itens_pedido")
@@ -367,6 +381,7 @@ export const alterarStatusPedido = async (req, res, next) => {
     let trx;
 
     try {
+        rejeitarControleFinanceiro(req.body);
         const { id } = req.params;
         const { status } = req.body || {};
         const usuarioId = req.usuario.id;
@@ -396,6 +411,9 @@ export const alterarStatusPedido = async (req, res, next) => {
         if (!pedido) {
             lancarErro("Pedido não encontrado.", 404);
         }
+
+        if (status === 'Cancelado') await exigirMutacaoSemCobranca(pedido, trx);
+        await exigirElegibilidadeOperacional(pedido, trx);
 
         if (pedido.metodo_entrega === "Retirada" && status === "Saiu para Entrega") {
             lancarErro('Pedidos de retirada não podem receber o status "Saiu para Entrega".', 400);
@@ -525,7 +543,8 @@ export const listarPedidosAdmin = async (req, res, next) => {
         const porPagina = Math.min(Math.max(Number.parseInt(limit, 10) || 10, 1), 100);
         const offset = (pagina - 1) * porPagina;
 
-        const baseQuery = connection("pedidos").whereNull("pedidos.deletado_em");
+        const baseQuery = aplicarElegibilidadeOperacional(connection("pedidos"))
+            .whereNull("pedidos.deletado_em");
 
         if (String(search).trim()) {
             const termo = String(search).trim();
@@ -583,7 +602,7 @@ export const listarPedidosPorTelefoneUsuario = async (req, res, next) => {
     try {
         const telefone = normalizarTelefone(req.params.telefone);
 
-        const pedidos = await connection("pedidos")
+        const pedidos = await aplicarElegibilidadeOperacional(connection("pedidos"))
             .select(
                 "pedidos.id",
                 "pedidos.nome_cliente",
@@ -624,6 +643,7 @@ export const deletarPedido = async (req, res, next) => {
     let trx;
 
     try {
+        rejeitarControleFinanceiro(req.body);
         const { id } = req.params;
         const usuarioId = req.usuario.id;
 
@@ -639,6 +659,8 @@ export const deletarPedido = async (req, res, next) => {
         if (!pedido) {
             lancarErro("Pedido não encontrado ou já foi excluído.", 404);
         }
+
+        await exigirMutacaoSemCobranca(pedido, trx);
 
         await connection("pedidos")
             .transacting(trx)
@@ -690,6 +712,7 @@ export const restaurarPedido = async (req, res, next) => {
     let trx;
 
     try {
+        rejeitarControleFinanceiro(req.body);
         const { id } = req.params;
         const usuarioId = req.usuario.id;
 
@@ -712,6 +735,8 @@ export const restaurarPedido = async (req, res, next) => {
                 message: "Este pedido já está ativo (não excluído)."
             });
         }
+
+        await exigirMutacaoSemCobranca(pedido, trx);
 
         await connection("pedidos")
             .transacting(trx)

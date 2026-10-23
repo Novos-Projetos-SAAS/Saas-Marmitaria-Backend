@@ -13,6 +13,10 @@ import { verifyToken } from "../middlewares/verifyToken.js";
 import { checkPermission } from "../middlewares/checkPermission.js";
 
 const router = Router();
+const registrarOrigem = origem => (req, res, next) => {
+    res.locals.origemPedido = origem;
+    next();
+};
 
 /**
  * @swagger
@@ -70,7 +74,7 @@ const router = Router();
  *               status: "fail"
  *               message: "Dados do pedido inválidos."
  */
-router.post('/', criarPedido)
+router.post('/', registrarOrigem('PUBLICO'), criarPedido)
 
 /**
  * @swagger
@@ -151,7 +155,7 @@ router.post(
     checkPermission(
         'pedidos.criar'
     ),
-
+    registrarOrigem('ADMIN'),
     criarPedido
 );
 

@@ -407,3 +407,253 @@ test('changed products and unavailable special meals preserve structured public 
     assert.equal(special.details.marmitas_especiais[0].tipo,'INDISPONIVEL');
     assert.deepEqual(await f.db('pedidos').count('* as n').first(),count);
 });
+
+let policySequence = 100;
+async function pendingOnlineFixture({ deleted = false, released = false } = {}) {
+    const response = await request('/pedidos', { method: 'POST', body: {
+        ...legacyPayload, metodo_pagamento_id: 33, telefone_cliente: '1198888' + (++policySequence)
+    } });
+    assert.equal(response.status, 201);
+    const id = (await response.json()).data.pedido_id;
+    await f.db('pedidos').where({ id }).update({ fluxo_pagamento: 'INFINITEPAY',
+        liberado_cozinha_em: released ? new Date() : null,
+        ...(deleted ? { deletado_em: new Date(), status: 'Cancelado' } : {}) });
+    return f.db('pedidos').where({ id }).first();
+}
+async function verifiedPaymentFixture(order, overrides = {}) {
+    const { randomUUID } = await import('node:crypto');
+    const [row] = await f.db('pagamentos').insert({ pedido_id: order.id, tentativa_numero: 1,
+        order_nsu: 'SYNTHETIC-' + randomUUID(), status: 'PAGA', valor_centavos: 2000,
+        valor_base_provider_centavos: 2000, valor_pago_provider_centavos: 2100,
+        valid_until: new Date(Date.now() + 3600000), provider_verified_at: new Date(), pago_em: new Date(),
+        transaction_nsu: randomUUID(), invoice_slug: 'synthetic-invoice-' + order.id,
+        capture_method: 'pix', ...overrides }).returning('*');
+    return row;
+}
+
+test('unpaid online orders are absent from the operational list, pagination and complete-order lookup', async () => {
+    const order = await pendingOnlineFixture();
+    const response = await request('/pedidos/admin?search=' + order.telefone_cliente);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.deepEqual(body.data, []);
+    assert.equal(body.pagination.total, 0);
+    const { buscarPedidoCompletoPorId } = await import('../../src/utils/pedidosUtils.js');
+    assert.equal(await buscarPedidoCompletoPorId(order.id), undefined);
+    const tracking = await request('/pedidos/rastreio/' + order.telefone_cliente);
+    assert.equal(tracking.status, 404);
+});
+
+for (const status of ['Pendente', 'Em Preparo', 'Saiu para Entrega', 'Entregue', 'Cancelado']) {
+    test('unpaid online order rejects operational status ' + status, async () => {
+        const order = await pendingOnlineFixture();
+        const events = [];
+        global.io = { to: () => ({ emit: (...args) => events.push(args) }) };
+        try {
+            const response = await request('/pedidos/' + order.id + '/status', { method: 'PATCH', body: { status } });
+            assert.equal(response.status, 409);
+            assert.deepEqual(await f.db('pedidos').where({ id: order.id }).first(), order);
+            assert.deepEqual(events, []);
+        } finally { delete global.io; }
+    });
+}
+
+for (const [label, verb, suffix, body, deleted] of [
+    ['edit items and method', 'PATCH', '', { marmitas: [], metodo_pagamento_id: 31 }, false],
+    ['delete', 'DELETE', '', undefined, false],
+    ['restore', 'PATCH', '/restaurar', {}, true]
+]) {
+    test('online financial protection blocks ' + label + ' without changing orders or items', async () => {
+        const order = await pendingOnlineFixture({ deleted });
+        const payment = await verifiedPaymentFixture(order, { status: 'INCERTA', pago_em: null, provider_verified_at: null });
+        const items = await f.db('itens_pedido').where({ pedido_id: order.id }).orderBy('id');
+        const composition = await f.db('composicao_item_pedido').whereIn('item_pedido_id', items.map(item => item.id));
+        const response = await request('/pedidos/' + order.id + suffix, { method: verb, body });
+        assert.equal(response.status, 409);
+        assert.deepEqual(await f.db('pedidos').where({ id: order.id }).first(), order);
+        assert.deepEqual(await f.db('pagamentos').where({ id: payment.id }).first(), payment);
+        assert.deepEqual(await f.db('itens_pedido').where({ pedido_id: order.id }).orderBy('id'), items);
+        assert.deepEqual(await f.db('composicao_item_pedido').whereIn('item_pedido_id', items.map(item => item.id)), composition);
+    });
+}
+
+test('financial protection also rejects legacy cancellation paths when a posterior order has a linked attempt', async () => {
+    const online = await pendingOnlineFixture();
+    await verifiedPaymentFixture(online, { status: 'AGUARDANDO', pago_em: null, provider_verified_at: null });
+    await f.db('pedidos').where({ id: online.id }).update({ fluxo_pagamento: 'POSTERIOR' });
+    const before = await f.db('pedidos').where({ id: online.id }).first();
+    for (const [method, suffix, body] of [['DELETE', '', undefined], ['PATCH', '/status', { status: 'Cancelado' }],
+        ['PATCH', '', { metodo_pagamento_id: 31 }]]) {
+        assert.equal((await request('/pedidos/' + online.id + suffix, { method, body })).status, 409);
+        assert.deepEqual(await f.db('pedidos').where({ id: online.id }).first(), before);
+    }
+});
+
+for (const field of ['fluxo_pagamento', 'liberado_cozinha_em', 'provider_verified_at', 'pago_em', 'status_pagamento']) {
+    test('client cannot write financial control field ' + field, async () => {
+        const before = await f.db('pedidos').count('* as n').first();
+        const response = await request('/pedidos', { method: 'POST', body: {
+            ...legacyPayload, metodo_pagamento_id: 33, [field]: field === 'fluxo_pagamento' ? 'POSTERIOR' : '2026-01-01'
+        } });
+        assert.equal(response.status, 400);
+        assert.deepEqual(await f.db('pedidos').count('* as n').first(), before);
+    });
+}
+
+test('release timestamp alone and unverified paid rows do not authorize kitchen access', async () => {
+    const order = await pendingOnlineFixture({ released: true });
+    for (const payment of [null, { provider_verified_at: null }, { valor_base_provider_centavos: 1900 }, { transaction_nsu: null }]) {
+        if (payment !== null) {
+            const existing = await f.db('pagamentos').where({ pedido_id: order.id }).first();
+            if (existing) await f.db('pagamentos').where({ id: existing.id }).update({
+                provider_verified_at: new Date(), valor_base_provider_centavos: 2000,
+                transaction_nsu: 'synthetic-transaction', ...payment });
+            else await verifiedPaymentFixture(order, payment);
+        }
+        assert.equal((await request('/pedidos/' + order.id + '/status', {
+            method: 'PATCH', body: { status: 'Em Preparo' }
+        })).status, 409);
+        const list = await (await request('/pedidos/admin?search=' + order.telefone_cliente)).json();
+        assert.equal(list.pagination.total, 0);
+    }
+});
+
+test('persisted verified release permits preparation and refund does not erase prior operational release', async () => {
+    const order = await pendingOnlineFixture({ released: true });
+    const payment = await verifiedPaymentFixture(order);
+    const response = await request('/pedidos/' + order.id + '/status', { method: 'PATCH', body: { status: 'Em Preparo' } });
+    assert.equal(response.status, 200);
+    const list = await (await request('/pedidos/admin?search=' + order.telefone_cliente)).json();
+    assert.equal(list.data[0].id, order.id);
+    await f.db('pagamentos').where({ id: payment.id }).update({ status: 'ESTORNADA', estornado_em: new Date() });
+    assert.equal((await request('/pedidos/' + order.id + '/status', { method: 'PATCH', body: { status: 'Saiu para Entrega' } })).status, 200);
+    assert.equal((await request('/pedidos/' + order.id + '/status', { method: 'PATCH', body: { status: 'Cancelado' } })).status, 409);
+});
+
+test('disabled checkout preserves all public payment choices, ignores claimed origin and makes no external calls', async () => {
+    const originalFetch = global.fetch;
+    const financialBefore = await f.db('pagamentos').select('*').orderBy('id');
+    const externalCalls = [];
+    global.fetch = (input, options) => {
+        if (new URL(input).origin !== base) { externalCalls.push(String(input)); throw new Error('External request forbidden in phase 2A'); }
+        return originalFetch(input, options);
+    };
+    try {
+        for (const method of [31, 32, 33, 34]) {
+            const response = await request('/pedidos', { method: 'POST', body: {
+                ...legacyPayload, tipo_pedido: 'Presencial', metodo_pagamento_id: method,
+                origem: 'ADMIN', pedidoOrigem: 'ADMIN', origemPedido: 'ADMIN'
+            } });
+            assert.equal(response.status, 201);
+            const row = await f.db('pedidos').where({ id: (await response.json()).data.pedido_id }).first();
+            assert.equal(row.fluxo_pagamento, 'POSTERIOR');
+        }
+        assert.deepEqual(externalCalls, []);
+        assert.deepEqual(await f.db('pagamentos').select('*').orderBy('id'), financialBefore);
+    } finally { global.fetch = originalFetch; }
+});
+
+test('creation reloads persisted eligibility and never emits an unpaid online order to kitchen', async () => {
+    // Synthetic trigger injects a future stored order into today's disabled creation path.
+    await f.db.raw(`CREATE FUNCTION phase2a_pending_fixture() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.nome_cliente = 'SYNTHETIC_UNPAID_CREATION' THEN
+            NEW.fluxo_pagamento := 'INFINITEPAY'; NEW.liberado_cozinha_em := NULL;
+        END IF; RETURN NEW; END; $$`);
+    await f.db.raw('CREATE TRIGGER phase2a_pending_fixture BEFORE INSERT ON pedidos FOR EACH ROW EXECUTE FUNCTION phase2a_pending_fixture()');
+    const events = [];
+    const paymentsBefore = await f.db('pagamentos').select('*').orderBy('id');
+    global.io = { to: () => ({ emit: (...args) => events.push(args) }) };
+    try {
+        const response = await request('/pedidos', { method: 'POST', body: {
+            ...legacyPayload, nome_cliente: 'SYNTHETIC_UNPAID_CREATION', metodo_pagamento_id: 33
+        } });
+        assert.equal(response.status, 201);
+        const order = await f.db('pedidos').where({ id: (await response.json()).data.pedido_id }).first();
+        assert.equal(order.fluxo_pagamento, 'INFINITEPAY');
+        assert.equal(order.liberado_cozinha_em, null);
+        assert.deepEqual(events, []);
+        assert.deepEqual(await f.db('pagamentos').select('*').orderBy('id'), paymentsBefore);
+    } finally {
+        delete global.io;
+        await f.db.raw('DROP TRIGGER phase2a_pending_fixture ON pedidos');
+        await f.db.raw('DROP FUNCTION phase2a_pending_fixture()');
+    }
+});
+
+test('legacy orders with null release timestamp keep listing, editing, status, soft deletion and restoration', async () => {
+    const online = await pendingOnlineFixture();
+    await f.db('pedidos').where({ id: online.id }).update({ fluxo_pagamento: 'POSTERIOR', criado_em: '2025-01-01T12:00:00Z' });
+    const before = await f.db('pedidos').where({ id: online.id }).first();
+    assert.equal(before.liberado_cozinha_em, null);
+    const listing = await (await request('/pedidos/admin?search=' + before.telefone_cliente)).json();
+    assert.equal(listing.data[0].id, before.id);
+    assert.equal((await request('/pedidos/' + before.id, { method: 'PATCH', body: {
+        observacoes: 'Alteração legada sintética', metodo_pagamento_id: 32
+    } })).status, 200);
+    assert.equal((await request('/pedidos/' + before.id + '/status', { method: 'PATCH', body: { status: 'Em Preparo' } })).status, 200);
+    assert.equal((await request('/pedidos/' + before.id, { method: 'DELETE' })).status, 200);
+    assert.equal((await request('/pedidos/' + before.id + '/restaurar', { method: 'PATCH', body: {} })).status, 200);
+    const after = await f.db('pedidos').where({ id: before.id }).first();
+    assert.equal(after.status, 'Pendente');
+    assert.equal(after.fluxo_pagamento, 'POSTERIOR');
+    assert.equal(after.liberado_cozinha_em, null);
+    assert.equal(after.deletado_em, null);
+    assert.equal(after.valor_total, before.valor_total);
+    assert.equal(after.criado_em.toISOString(), before.criado_em.toISOString());
+    assert.equal(await f.db('pagamentos').where({ pedido_id: before.id }).count('* as n').first().then(r => Number(r.n)), 0);
+});
+
+test('financial input is rejected on every administrative mutation without changing a legacy order', async () => {
+    const online = await pendingOnlineFixture();
+    await f.db('pedidos').where({ id: online.id }).update({ fluxo_pagamento: 'POSTERIOR' });
+    const before = await f.db('pedidos').where({ id: online.id }).first();
+    for (const [method, suffix] of [['PATCH', ''], ['PATCH', '/status'], ['DELETE', ''], ['PATCH', '/restaurar']]) {
+        const response = await request('/pedidos/' + before.id + suffix, { method, body: {
+            fluxo_pagamento: 'POSTERIOR', liberado_cozinha_em: new Date().toISOString(), status: 'Em Preparo'
+        } });
+        assert.equal(response.status, 400);
+        assert.deepEqual(await f.db('pedidos').where({ id: before.id }).first(), before);
+    }
+});
+
+test('an enabled environment flag with inactive database configuration preserves public and assisted creation', async () => {
+    process.env.INFINITEPAY_CHECKOUT_ENABLED = 'true';
+    try {
+        assert.equal((await f.db('config_infinitepay').where({ id: 1 }).first()).ativo, false);
+        for (const path of ['/pedidos', '/pedidos/admin']) {
+            const response = await request(path, { method: 'POST', body: { ...legacyPayload, metodo_pagamento_id: 33 } });
+            assert.equal(response.status, 201);
+            assert.equal((await f.db('pedidos').where({ id: (await response.json()).data.pedido_id }).first()).fluxo_pagamento, 'POSTERIOR');
+        }
+    } finally { process.env.INFINITEPAY_CHECKOUT_ENABLED = 'false'; }
+});
+
+test('operational status waits for the order lock and rechecks eligibility after a concurrent change', async () => {
+    const order = await pendingOnlineFixture({ released: true });
+    await verifiedPaymentFixture(order);
+    const writer = await f.db.transaction();
+    let responsePromise;
+    try {
+        await writer('pedidos').where({ id: order.id }).forUpdate().first();
+        const pid = (await writer.raw('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+        responsePromise = request('/pedidos/' + order.id + '/status', { method: 'PATCH', body: { status: 'Em Preparo' } });
+        const { setTimeout: pause } = await import('node:timers/promises');
+        const deadline = Date.now() + 5000;
+        let blocked = false;
+        while (Date.now() < deadline) {
+            blocked = (await f.db.raw('SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE ? = ANY(pg_blocking_pids(pid))) AS blocked', [pid])).rows[0].blocked;
+            if (blocked) break;
+            await pause(10);
+        }
+        assert.equal(blocked, true, 'the competing HTTP mutation must wait for the writer, not use a stale snapshot');
+        await writer('pedidos').where({ id: order.id }).update({ liberado_cozinha_em: null });
+        await writer.commit();
+        assert.equal((await responsePromise).status, 409);
+        const after = await f.db('pedidos').where({ id: order.id }).first();
+        assert.equal(after.status, 'Pendente');
+        assert.equal(after.liberado_cozinha_em, null);
+    } finally {
+        if (!writer.isCompleted()) await writer.rollback();
+        if (responsePromise) await responsePromise;
+    }
+});

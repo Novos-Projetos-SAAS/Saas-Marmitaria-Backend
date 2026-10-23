@@ -1135,6 +1135,7 @@
 
 import connection from "../database/connection.js";
 import { lancarErro } from "./errorUtils.js";
+import { aplicarElegibilidadeOperacional } from './pedidoPaymentPolicy.js';
 
 /**
  * Converte um valor monetário para centavos.
@@ -1979,7 +1980,7 @@ export function selecionarProdutosJson() {
  * ============================================================
  */
 export async function buscarPedidoCompletoPorId(pedidoId) {
-    return connection('pedidos')
+    return aplicarElegibilidadeOperacional(connection('pedidos'))
         .leftJoin('metodos_pagamento', 'pedidos.metodo_pagamento_id', '=', 'metodos_pagamento.id')
         .select(
             'pedidos.*',
@@ -1988,6 +1989,7 @@ export async function buscarPedidoCompletoPorId(pedidoId) {
             selecionarProdutosJson()
         )
         .where('pedidos.id', pedidoId)
+        .whereNull('pedidos.deletado_em')
         .first();
 }
 
