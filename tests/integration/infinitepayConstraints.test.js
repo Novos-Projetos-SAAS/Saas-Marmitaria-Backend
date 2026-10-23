@@ -17,8 +17,10 @@ test('additive schema preserves synthetic historical IDs, totals, items and lega
         assert.equal(method.codigo, null);
         assert.equal(method.tipo_financeiro, 'OUTRO');
         assert.equal(await f.db('itens_pedido').where({ pedido_id: 701 }).count('* as n').first().then(r => Number(r.n)), 1);
-        await f.db.migrate.rollback(); // only the new batch; preserves historical order
-        assert.equal(await f.db.schema.hasTable('pagamentos'), false);
+        const migrationHistory = await f.db('knex_migrations').select('*').orderBy('id');
+        await assert.rejects(f.db.migrate.rollback(), /Rollback bloqueado.*forward-only/i);
+        assert.equal(await f.db.schema.hasTable('pagamentos'), true);
+        assert.deepEqual(await f.db('knex_migrations').select('*').orderBy('id'), migrationHistory);
         assert.equal((await f.db('pedidos').where({ id: 701 }).first()).valor_total, '20.00');
         await f.db.migrate.latest();
         assert.equal((await f.db('config_infinitepay').first()).ativo, false);
@@ -51,7 +53,7 @@ test('constraints prevent concurrent chargeable attempts and protect external fa
         await f.db('pagamentos_eventos').insert({ event_key: 'synthetic:1', tipo_evento: 'SINTETICO' });
         await assert.rejects(f.db('pagamentos_eventos').insert({ event_key: 'synthetic:1', tipo_evento: 'SINTETICO' }), { code: '23505' });
         await assert.rejects(f.db('pedido_acessos').insert({ pedido_id: order.id, token_hash: 'a'.repeat(64), escopo: 'ADMIN', expira_em: '2030-01-01' }), { code: '23514' });
-        await assert.rejects(f.db.migrate.rollback(), /Rollback.*financeir/i);
+        await assert.rejects(f.db.migrate.rollback(), /Rollback bloqueado.*forward-only/i);
         assert.equal(await f.db('pagamentos').count('* as n').first().then(r => Number(r.n)), 2);
     } finally { await f.close(); }
 });

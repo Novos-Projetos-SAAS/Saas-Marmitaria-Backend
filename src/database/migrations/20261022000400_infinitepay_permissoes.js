@@ -8,5 +8,5 @@ export async function up(knex) {
     if (grants.length) await knex('permissoes_usuarios').insert(grants).onConflict(['usuario_id','permissao_id']).ignore();
 }
 export async function down() {
-    // Preserve RBAC records/grants that may predate this migration. No destructive permission rollback.
+    throw new Error('Rollback bloqueado (forward-only): os dados e a estrutura existentes devem ser preservados. Use uma migration aditiva de correção.');
 }

@@ -85,9 +85,6 @@ export async function up(knex) {
     await knex.raw("ALTER TABLE outbox_eventos ADD CONSTRAINT ip_outbox_status CHECK (status IN ('PENDENTE','PROCESSANDO','CONCLUIDO','ERRO')), ADD CONSTRAINT ip_outbox_attempts CHECK (tentativas>=0), ADD CONSTRAINT ip_outbox_type CHECK (tipo IN ('PEDIDO_LIBERADO','PAGAMENTO_ATUALIZADO'))");
     await knex.raw("CREATE UNIQUE INDEX ip_outbox_release_once ON outbox_eventos(pedido_id) WHERE tipo='PEDIDO_LIBERADO'");
 }
-export async function down(knex) {
-    for (const name of ['pagamentos','pagamentos_eventos','pedido_acessos','outbox_eventos']) {
-        if (await knex(name).first('id')) throw new Error('Rollback bloqueado: registros financeiros existentes devem ser preservados.');
-    }
-    for (const name of ['outbox_eventos','pedido_acessos','pagamentos_eventos','pagamentos']) await knex.schema.dropTable(name);
+export async function down() {
+    throw new Error('Rollback bloqueado (forward-only): os dados e a estrutura existentes devem ser preservados. Use uma migration aditiva de correção.');
 }

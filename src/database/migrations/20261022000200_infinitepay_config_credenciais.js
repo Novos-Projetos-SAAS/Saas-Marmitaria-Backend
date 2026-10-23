@@ -33,10 +33,6 @@ export async function up(knex) {
         FOR EACH ROW EXECUTE FUNCTION ip_credencial_immutable();
     `);
 }
-export async function down(knex) {
-    if (await knex('infinitepay_credenciais').first('id')) throw new Error('Rollback bloqueado: credenciais financeiras existentes.');
-    await knex.schema.alterTable('config_infinitepay', t => t.dropForeign('credencial_atual_id'));
-    await knex.schema.dropTable('infinitepay_credenciais');
-    await knex.raw('DROP FUNCTION ip_credencial_immutable()');
-    await knex.schema.dropTable('config_infinitepay');
+export async function down() {
+    throw new Error('Rollback bloqueado (forward-only): os dados e a estrutura existentes devem ser preservados. Use uma migration aditiva de correção.');
 }
