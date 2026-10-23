@@ -5,6 +5,9 @@ const camposFinanceiros = new Set([
     'status_pagamento', 'payment_status', 'bloqueia_nova_cobranca', 'pagamentos'
 ]);
 
+// Mesmo whitespace de String.trim(), sem depender do locale do PostgreSQL.
+const whitespaceIdentificador = '\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff';
+
 export function rejeitarControleFinanceiro(input) {
     if (input && Object.keys(input).some(campo => camposFinanceiros.has(campo))) {
         lancarErro('O controle financeiro do pedido é exclusivo do servidor.', 400);
@@ -32,8 +35,8 @@ export function aplicarElegibilidadeOperacional(query) {
                         .whereIn('financeiro.status', ['PAGA', 'LIQUIDADA', 'ESTORNADA'])
                         .whereNotNull('financeiro.provider_verified_at')
                         .whereNotNull('financeiro.pago_em')
-                        .whereNotNull('financeiro.transaction_nsu')
-                        .whereNotNull('financeiro.invoice_slug')
+                        .whereRaw('LENGTH(BTRIM(??, ?)) > 0', ['financeiro.transaction_nsu', whitespaceIdentificador])
+                        .whereRaw('LENGTH(BTRIM(??, ?)) > 0', ['financeiro.invoice_slug', whitespaceIdentificador])
                         .whereIn('financeiro.capture_method', ['pix', 'credit_card'])
                         .whereColumn('financeiro.valor_base_provider_centavos', 'financeiro.valor_centavos')
                         .whereRaw('?? = ROUND(?? * 100)', ['financeiro.valor_centavos', 'pedidos.valor_total']);

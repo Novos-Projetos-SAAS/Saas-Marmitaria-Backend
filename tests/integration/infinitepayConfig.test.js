@@ -518,6 +518,55 @@ test('release timestamp alone and unverified paid rows do not authorize kitchen 
     }
 });
 
+for (const field of ['transaction_nsu', 'invoice_slug']) {
+    for (const [label, value] of [
+        ['null', null], ['empty', ''], ['spaces', '   '],
+        ['tabs', '\t\t'], ['newlines', '\r\n'], ['mixed whitespace', ' \t\r\n '],
+        ['NBSP', '\u00a0'], ['EM SPACE', '\u2003'], ['BOM', '\ufeff']
+    ]) {
+        test('paid online order with ' + label + ' ' + field + ' remains outside operations', async () => {
+            const order = await pendingOnlineFixture({ released: true });
+            const payment = await verifiedPaymentFixture(order, { [field]: value });
+            const events = [];
+            global.io = { to: () => ({ emit: (...args) => events.push(args) }) };
+            try {
+                const response = await request('/pedidos/' + order.id + '/status', {
+                    method: 'PATCH', body: { status: 'Em Preparo' }
+                });
+                assert.equal(response.status, 409);
+                assert.deepEqual(await f.db('pedidos').where({ id: order.id }).first(), order);
+                assert.deepEqual(await f.db('pagamentos').where({ id: payment.id }).first(), payment);
+                assert.deepEqual(events, []);
+                const listing = await request('/pedidos/admin?search=' + order.telefone_cliente);
+                assert.equal(listing.status, 200);
+                const list = await listing.json();
+                assert.deepEqual(list.data, []);
+                assert.equal(list.pagination.total, 0);
+                const { buscarPedidoCompletoPorId } = await import('../../src/utils/pedidosUtils.js');
+                assert.equal(await buscarPedidoCompletoPorId(order.id), undefined);
+                assert.equal((await request('/pedidos/rastreio/' + order.telefone_cliente)).status, 404);
+            } finally { delete global.io; }
+        });
+    }
+}
+
+test('verified release accepts opaque provider identifiers containing non-whitespace content', async () => {
+    const order = await pendingOnlineFixture({ released: true });
+    await verifiedPaymentFixture(order, {
+        transaction_nsu: ' \tprovider/nsu:42\r\n ', invoice_slug: '\n invoice/reference:42\t '
+    });
+    const response = await request('/pedidos/' + order.id + '/status', {
+        method: 'PATCH', body: { status: 'Em Preparo' }
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await f.db('pedidos').where({ id: order.id }).first()).status, 'Em Preparo');
+    const list = await (await request('/pedidos/admin?search=' + order.telefone_cliente)).json();
+    assert.equal(list.pagination.total, 1);
+    assert.equal(list.data[0].id, order.id);
+    const { buscarPedidoCompletoPorId } = await import('../../src/utils/pedidosUtils.js');
+    assert.equal((await buscarPedidoCompletoPorId(order.id)).id, order.id);
+});
+
 test('persisted verified release permits preparation and refund does not erase prior operational release', async () => {
     const order = await pendingOnlineFixture({ released: true });
     const payment = await verifiedPaymentFixture(order);
