@@ -1,0 +1,53 @@
+# Plano separado — segurança QZ e material privado
+
+Fase 1.2, 23/10/2026. **Proposta, sem execução.** Esta fase não modifica o PEM, a assinatura QZ, o Frontend, estações ou regras de rede. Nenhuma chave ou credencial é reproduzida neste documento.
+
+## Situação e risco
+
+- `private-key.pem` continua rastreado no repositório. Não foi aberto nesta fase. Não está confirmado se corresponde à identidade ativa; remover apenas o arquivo atual não revoga cópias históricas.
+- `src/controllers/Qz.Controller.js:72` usa `QZ_PRIVATE_KEY`, não lê esse arquivo diretamente. A equivalência entre arquivo, variável e certificado confiado deve ser verificada por operador autorizado, sem divulgar material privado.
+- `src/routes/Qz.Routes.js:7` não exige autenticação. O assinador aceita material do chamador e seus logs/respostas de erro ainda podem expor detalhes (`Qz.Controller.js:88`, `:101`, `:106` e `:107`). O logger financeiro não cobre esses caminhos.
+- Risco alto preexistente: uso indevido da identidade de assinatura e exposição de conteúdo. Não foi feita prova com chave real nem chamada ao assinador de produção.
+
+## Contenção imediata proposta
+
+Responsáveis: administrador da infraestrutura, responsável pela loja/impressão e mantenedor do Backend. As medidas abaixo exigem validação do ambiente e autorização operacional própria; não foram aplicadas automaticamente.
+
+1. Suspender redistribuição do PEM, limitar acesso ao repositório/artefatos/backups e remover cópias públicas indevidas por processo controlado. Preservar evidência de exposição em local restrito, sem replicar a chave em chamados.
+2. Inventariar chamadas legítimas a `/qz/assinar` e estações/origens. Se houver proxy/WAF/VPN, avaliar restrição temporária ao conjunto efetivamente necessário, com teste de uma estação piloto antes da mudança geral. Bloquear tráfego legítimo por IP móvel/proxy mal inventariado interromperia impressão; CORS ou ocultação da URL não são controles suficientes.
+3. Restringir acesso e retenção dos logs existentes; verificar se contêm payloads ou erros sensíveis. Evitar ativar debug. Preparar remoção dos logs brutos em correção autorizada, preservando metadados úteis.
+4. Confirmar identidade e validade usando certificado público/fingerprint e conferência segura pelo operador. Se o material exposto estiver ativo, tratar como comprometido e priorizar rotação coordenada. Não aguardar que apagar o arquivo do Git resolva a exposição.
+5. Definir responsável de plantão, janela e caminho de contingência de impressão antes de qualquer bloqueio/revogação. Não manter chave comprometida como estratégia permanente de retorno.
+
+## Correção de aplicação proposta
+
+- Manter assinatura no servidor, com chave em secret manager/armazenamento restrito e acesso mínimo. Nunca mover a chave para o navegador, respostas HTTP, logs ou arquivos públicos.
+- Exigir sessão válida, usuário/cargo ativo e permissão explícita para impressão; proteger chamadas do navegador com Origin exato e CSRF da sessão. Verificar como o cliente atual envia cookies antes de endurecer a rota.
+- Autorizar operações QZ explicitamente e limitar tamanho/taxa. Vincular impressão/reimpressão ao trabalho permitido. Descoberta de impressoras e outras funções necessárias não devem exigir artificialmente um ID de pedido.
+- Validar a operação sem alterar os bytes assinados, formato base64 de resposta ou algoritmo requerido pelas versões efetivamente instaladas. Evitar desserializar e reserializar a mensagem antes da assinatura.
+- Retornar erros públicos fixos e registrar somente ação/resultado, usuário autorizado e identificador interno não sensível. Não registrar payload, chave, fragmento de assinatura, headers, query ou erro bruto.
+- Definir replay/janela temporal de acordo com o protocolo real do cliente/QZ, sem inventar campos incompatíveis. Falha de autenticação deve impedir assinatura sem quebrar chamadas legítimas já homologadas.
+
+## Rotação e limpeza do Git
+
+1. Em homologação, emitir material de teste e provar correspondência certificado/chave sem divulgar a chave. Verificar versões QZ, certificado público usado pelos clientes, validade e confiança em cada estação.
+2. Preparar novo par operacional por canal seguro, plano de distribuição do certificado público, atualização de confiança e implantação coordenada do servidor. Verificar possibilidade de transição suportada; não supor sobreposição de certificados/chaves.
+3. Realizar piloto e observar impressão automática/manual e reimpressão. Em falha, usar a contingência acordada; não restaurar uma identidade sabidamente exposta sem decisão formal de incidente.
+4. Após transição validada, revogar/desconfiar a identidade antiga conforme suporte e operação QZ. Remover material privado do HEAD e reforçar prevenção de reintrodução. Limpeza de histórico exige autorização específica, coordenação dos clones/backups e eventual reescrita de referências; está fora da Fase 1.2.
+5. Guardar somente fingerprints públicos, datas e resultados de validação nos registros de mudança. Nenhum PEM privado ou variável secreta deve aparecer no diff, relatório ou chamado.
+
+## Testes e critérios de aceite
+
+| Área | Casos e evidência exigidos |
+|---|---|
+| Autorização | Sem sessão, expirada, usuário desativado e sem permissão: rejeitar sem assinatura. Usuário permitido: contrato atual preservado. |
+| Escrita e abuso | Origin ausente/nulo/indevido, CSRF ausente/de outra sessão, operação desconhecida, payload excessivo e limite de taxa: rejeitar sem vazar conteúdo. |
+| Protocolo | Assinatura de fixture sintética verificada com certificado público correspondente; qualquer alteração dos bytes falha. Mesma codificação e tipo de resposta do cliente atual. |
+| Funções QZ | Conectar/reconectar, obter lista de impressoras, selecionar impressora, imprimir e reimprimir; confirmar quais funções realmente pedem assinatura. |
+| Continuidade | Impressão automática habilitada/desabilitada, nome persistido, múltiplas estações/impressoras, fila, falha de rede e reinício do QZ/servidor. Comprovar ausência de perda e de duplicação de trabalhos no cenário de contingência acordado. |
+| Certificado | Correspondência com chave, confiança/validade em cada versão instalada, piloto e transição/revogação. Não testar confiança com chave privada exposta em cliente. |
+| Logs | Sentinelas sintéticas em payload/erro/query/headers não aparecem em resposta, console, auditoria ou proxy configurado. |
+
+Os testes de roundtrip do cadastro nesta Fase 1.2 comprovam persistência das configurações de impressão no Backend. **Não comprovam impressão física, confiança de certificado ou segurança do assinador.** Todos os testes operacionais acima continuam pendentes.
+
+Fonte oficial consultada em 23/10/2026: [QZ — Signing](https://qz.io/docs/signing). O QZ recomenda assinatura no servidor e separa os callbacks de certificado e assinatura; estes podem ser invocados por funções além da impressão. O roteiro deve ser adaptado às versões e chamadas reais da instalação.

@@ -9,9 +9,12 @@ function publicDetails(value, depth = 0) {
 // Whitelist metadata; never copy body, headers, full URL, error.message or stack.
 export function safeRequestLog(req = {}) {
     const route = typeof req.route?.path === 'string' ? req.route.path : null;
+    // auditBase is assigned by mountRoutes from a server-owned literal. Before
+    // route selection, do not fall back to baseUrl/path/originalUrl from a URL.
+    const auditBase = typeof req.auditBase === 'string' ? req.auditBase : null;
     return {
         method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].includes(req.method) ? req.method : 'UNKNOWN',
-        route: route ? String(req.auditBase ?? req.baseUrl ?? '') + route : '[unmatched]',
+        route: route ? String(auditBase ?? req.baseUrl ?? '') + route : auditBase || '[unmatched]',
         usuario_id: Number.isSafeInteger(req.usuario?.id) ? req.usuario.id : null
     };
 }

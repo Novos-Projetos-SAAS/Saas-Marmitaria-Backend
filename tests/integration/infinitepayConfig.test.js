@@ -78,6 +78,72 @@ test('writes require exact trusted origin, session-bound CSRF token and JSON', a
     assert.equal((await request(undefined, { id: 2, method: 'PUT', body: { ativo: false }, headers: { Origin: origin, 'X-Infinitepay-CSRF': token } })).status, 403);
     assert.equal((await request(undefined, { method: 'PUT', body: { ativo: false }, headers: { Origin: 'null', 'X-Infinitepay-CSRF': token } })).status, 403);
 });
+
+test('non-JSON writes return 415 without changing config, credentials or audit actions', async () => {
+    const token = (await (await request()).json()).csrf_token;
+    const configBefore = await f.db('config_infinitepay').select('*');
+    const credentialsBefore = await f.db('infinitepay_credenciais').select('*');
+    const actionsBefore = await f.db('logs').where({ acao: 'INFINITEPAY.CONFIGURAR' }).select('*');
+    for (const contentType of ['text/plain', 'application/x-www-form-urlencoded', 'application/octet-stream']) {
+        const response = await request(undefined, { method: 'PUT', body: { ativo: false, handle: 'SHOULD_NOT_PERSIST' },
+            headers: { Origin: origin, 'X-Infinitepay-CSRF': token, 'Content-Type': contentType } });
+        assert.equal(response.status, 415, contentType);
+    }
+    const missingType = await fetch(base + '/configuracoes/infinitepay', { method: 'PUT',
+        headers: { Cookie: cookie(), Origin: origin, 'X-Infinitepay-CSRF': token },
+        body: Buffer.from('{"ativo":false}') });
+    assert.equal(missingType.status, 415);
+    assert.deepEqual(await f.db('config_infinitepay').select('*'), configBefore);
+    assert.deepEqual(await f.db('infinitepay_credenciais').select('*'), credentialsBefore);
+    assert.deepEqual(await f.db('logs').where({ acao: 'INFINITEPAY.CONFIGURAR' }).select('*'), actionsBefore);
+});
+
+test('database failure before route selection logs the static mount without request secrets', async () => {
+    const sentinel = 'PRE_ROUTE_SECRET_MUST_NOT_APPEAR';
+    const captured = [];
+    const originalError = console.error;
+    let response, renamed = false;
+    console.error = (...args) => captured.push(args);
+    try {
+        // Fail the real current-user query, not a mock, in this fixture schema only.
+        await f.db.schema.renameTable('usuarios', 'usuarios_ip_failure');
+        renamed = true;
+        response = await request('/configuracoes/infinitepay?token=' + sentinel,
+            { headers: { 'X-Api-Key': sentinel, Authorization: sentinel } });
+    } finally {
+        if (renamed) await f.db.schema.renameTable('usuarios_ip_failure', 'usuarios');
+        console.error = originalError;
+    }
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), { status: 'error', message: 'Erro interno no servidor' });
+    const logged = await f.db('logs').where({ acao: 'SISTEMA.ERRO' }).orderBy('id', 'desc').first();
+    assert.equal(logged.endpoint, '/configuracoes/infinitepay');
+    assert.deepEqual(captured, [['Erro interno na API', { method: 'GET', route: '/configuracoes/infinitepay', usuario_id: 1 }]]);
+    assert.equal(JSON.stringify({ logged, captured }).includes(sentinel), false);
+});
+
+test('database failure after route selection logs the template without query secrets', async () => {
+    const sentinel = 'POST_ROUTE_SECRET_MUST_NOT_APPEAR';
+    const captured = [];
+    const originalError = console.error;
+    let response, renamed = false;
+    console.error = (...args) => captured.push(args);
+    try {
+        await f.db.schema.renameTable('config_infinitepay', 'config_infinitepay_failure');
+        renamed = true;
+        response = await request('/configuracoes/infinitepay?api_key=' + sentinel,
+            { headers: { Authorization: sentinel } });
+    } finally {
+        if (renamed) await f.db.schema.renameTable('config_infinitepay_failure', 'config_infinitepay');
+        console.error = originalError;
+    }
+    assert.equal(response.status, 500);
+    assert.deepEqual(await response.json(), { status: 'error', message: 'Erro interno no servidor' });
+    const logged = await f.db('logs').where({ acao: 'SISTEMA.ERRO' }).orderBy('id', 'desc').first();
+    assert.equal(logged.endpoint, '/configuracoes/infinitepay/');
+    assert.deepEqual(captured, [['Erro interno na API', { method: 'GET', route: '/configuracoes/infinitepay/', usuario_id: 1 }]]);
+    assert.equal(JSON.stringify({ logged, captured }).includes(sentinel), false);
+});
 test('config stores ciphertext, versioned account context and returns no key; Phase 1 cannot activate', async () => {
     const r = await write({ handle: '$synthetic-store', api_key: secret, assured_installments: 0 });
     assert.equal(r.status, 200);
@@ -124,8 +190,9 @@ test('database and encryption errors leak no key in responses, console or persis
         assert.equal(JSON.stringify(logs).includes(secret), false);
         assert.equal(messages.join('').includes(secret), false);
         const errorLogs = logs.filter(row=>row.acao==='SISTEMA.ERRO');
-        assert.equal(errorLogs.length,2);
-        assert.equal(errorLogs.every(row=>row.endpoint==='/configuracoes/infinitepay/'),true);
+        const controllerErrors = errorLogs.filter(row=>row.metodo==='PUT');
+        assert.equal(controllerErrors.length,2);
+        assert.equal(controllerErrors.every(row=>row.endpoint==='/configuracoes/infinitepay/'),true);
     } finally { console.error = originalError; }
 });
 
@@ -160,6 +227,38 @@ test('company settings reject financial secrets before persistence and keep the 
     assert.equal(JSON.stringify(await f.db('logs').select('*')).includes('Titular sintético'), false);
 });
 
+test('legacy company GET and full-object update preserve automatic printing and printer selection', async () => {
+    await f.db('dados_empresa').where({ id: 1 }).update({
+        imprimir_automaticamente: true, nome_impressora: 'IMPRESSORA_SINTETICA_80MM',
+        nome_fantasia: 'Loja anterior', complemento: 'Sala 2'
+    });
+    const before = await f.db('dados_empresa').where({ id: 1 }).first();
+    const read = await request('/configuracoes/empresa');
+    assert.equal(read.status, 200);
+    const form = (await read.json()).data;
+    assert.equal(form.imprimir_automaticamente, true);
+    assert.equal(form.nome_impressora, 'IMPRESSORA_SINTETICA_80MM');
+    const saved = await request('/configuracoes/empresa', { method: 'PUT', body: {
+        ...form, id: 999, criado_em: '1999-01-01T00:00:00.000Z', atualizado_em: '1999-01-01T00:00:00.000Z',
+        nome_fantasia: 'Loja atualizada'
+    } });
+    assert.equal(saved.status, 200);
+    const result = (await saved.json()).data;
+    assert.equal(result.id, 1);
+    assert.equal(result.imprimir_automaticamente, true);
+    assert.equal(result.nome_impressora, 'IMPRESSORA_SINTETICA_80MM');
+    assert.equal(result.nome_fantasia, 'Loja atualizada');
+    const after = await f.db('dados_empresa').where({ id: 1 }).first();
+    const { atualizado_em: oldUpdate, nome_fantasia: oldName, ...oldStable } = before;
+    const { atualizado_em: newUpdate, nome_fantasia: newName, ...newStable } = after;
+    assert.deepEqual(newStable, oldStable);
+    assert.notEqual(newUpdate.toISOString(), '1999-01-01T00:00:00.000Z');
+    assert.equal((await f.db('dados_empresa').count('* as n').first()).n, '1');
+    const readBack = (await (await request('/configuracoes/empresa')).json()).data;
+    assert.equal(readBack.imprimir_automaticamente, true);
+    assert.equal(readBack.nome_impressora, 'IMPRESSORA_SINTETICA_80MM');
+});
+
 test('remote cash/debit and all four assisted payment methods retain prices, change and immediate kitchen events', async () => {
     const events = [];
     global.io = { to: () => ({ emit: (event, data) => events.push({ event, data }) }) };
@@ -184,6 +283,11 @@ test('remote cash/debit and all four assisted payment methods retain prices, cha
             const row = await f.db('pedidos').where({id:body.data.pedido_id}).first();
             assert.equal(row.fluxo_pagamento,'POSTERIOR');
             assert.equal(row.status,'Pendente');
+            assert.equal(row.metodo_pagamento_id,method);
+            assert.equal(row.tipo_pedido,channel);
+            assert.equal(row.liberado_cozinha_em,null);
+            assert.equal(row.client_request_id,null);
+            assert.equal(row.client_payload_hash,null);
             assert.equal(row.precisa_troco,method===31);
             assert.equal(row.troco_para,method===31?'50.00':null);
         }
@@ -195,6 +299,65 @@ test('remote cash/debit and all four assisted payment methods retain prices, cha
         assert.equal(methods.data.find(m=>m.id===31).codigo,'DINHEIRO');
     } finally { delete global.io; }
 });
+
+test('administrative creation still requires a session and the legacy order permission', async () => {
+    const before = await f.db('pedidos').select('*').orderBy('id');
+    const events = [];
+    global.io = { to: () => ({ emit: (...args) => events.push(args) }) };
+    try {
+        const payload = { ...legacyPayload, tipo_pedido: 'Presencial', metodo_pagamento_id: 31 };
+        const anonymous = await fetch(base + '/pedidos/admin', { method: 'POST',
+            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        assert.equal(anonymous.status, 401);
+        const denied = await request('/pedidos/admin', { method: 'POST', body: payload,
+            headers: { Cookie: cookie(3, 'atendente') } });
+        assert.equal(denied.status, 403);
+        assert.deepEqual(await f.db('pedidos').select('*').orderBy('id'), before);
+        assert.deepEqual(events, []);
+    } finally { delete global.io; }
+});
+
+for (const [label, methodId] of [['cash', 31], ['debit', 32]]) {
+    test('administrative pickup with ' + label + ' preserves items, total and immediate kitchen delivery', async () => {
+        const events = [];
+        const financialBefore = await f.db('pagamentos').select('*').orderBy('id');
+        const outboxBefore = await f.db('outbox_eventos').select('*').orderBy('id');
+        global.io = { to: room => ({ emit: (event, data) => events.push({ room, event, data }) }) };
+        try {
+            const response = await request('/pedidos/admin', { method: 'POST', body: {
+                ...legacyPayload, tipo_pedido: 'Presencial', metodo_entrega: 'Retirada',
+                metodo_pagamento_id: methodId, precisa_troco: false, troco_para: null,
+                marmitas: [{ ...legacyPayload.marmitas[0], quantidade: 2 }]
+            } });
+            assert.equal(response.status, 201);
+            const result = (await response.json()).data;
+            assert.equal(result.total, 40);
+            const order = await f.db('pedidos').where({ id: result.pedido_id }).first();
+            assert.equal(order.metodo_pagamento_id, methodId);
+            assert.equal(order.tipo_pedido, 'Presencial');
+            assert.equal(order.metodo_entrega, 'Retirada');
+            assert.equal(order.endereco_cliente, null);
+            assert.equal(order.valor_total, '40.00');
+            assert.equal(order.status, 'Pendente');
+            assert.equal(order.fluxo_pagamento, 'POSTERIOR');
+            assert.equal(order.liberado_cozinha_em, null);
+            assert.equal(order.precisa_troco, false);
+            assert.equal(order.troco_para, null);
+            const items = await f.db('itens_pedido').where({ pedido_id: order.id });
+            assert.equal(items.length, 1);
+            assert.equal(items[0].quantidade, 2);
+            assert.equal(items[0].preco_unitario, '20.00');
+            assert.equal(items[0].subtotal, '40.00');
+            const composition = await f.db('composicao_item_pedido').where({ item_pedido_id: items[0].id });
+            assert.deepEqual(composition.map(row => row.alimento_id), legacyPayload.marmitas[0].alimentos);
+            assert.equal(events.length, 1);
+            assert.equal(events[0].event, 'novo_pedido_recebido');
+            assert.equal(Number(events[0].data.valor_total), 40);
+            assert.deepEqual(await f.db('pagamentos').select('*').orderBy('id'), financialBefore);
+            assert.deepEqual(await f.db('outbox_eventos').select('*').orderBy('id'), outboxBefore);
+        } finally { delete global.io; }
+    });
+}
 
 test('closed shop and unavailable food retain conflict codes without creating orders or kitchen events', async () => {
     const count = await f.db('pedidos').count('* as n').first();

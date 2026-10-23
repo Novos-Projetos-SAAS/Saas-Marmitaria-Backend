@@ -25,6 +25,31 @@ test('unknown paths and internal errors do not leak URL tokens or database messa
         { status: 'error', message: 'Erro interno no servidor' });
 });
 
+test('pre-route failures retain only the server-owned audit prefix', () => {
+    const sentinel = 'DO_NOT_LOG_PRE_ROUTE_SECRET';
+    const record = security.safeRequestLog({
+        method: 'GET', auditBase: '/configuracoes/infinitepay', usuario: { id: 7 },
+        baseUrl: '/untrusted/' + sentinel,
+        originalUrl: '/configuracoes/infinitepay?api_key=' + sentinel,
+        url: '/?token=' + sentinel, headers: { authorization: sentinel }, body: { api_key: sentinel }
+    });
+    assert.deepEqual(record, { method: 'GET', route: '/configuracoes/infinitepay', usuario_id: 7 });
+    assert.equal(JSON.stringify(record).includes(sentinel), false);
+});
+
+test('post-route failures prefer the static prefix over a restored or parameterized baseUrl', () => {
+    const record = security.safeRequestLog({
+        method: 'PUT', auditBase: '/configuracoes/infinitepay', baseUrl: '/HIDDEN_TOKEN',
+        route: { path: '/' }, usuario: { id: 7 }, originalUrl: '/HIDDEN_TOKEN?key=HIDDEN_KEY'
+    });
+    assert.deepEqual(record, { method: 'PUT', route: '/configuracoes/infinitepay/', usuario_id: 7 });
+});
+
+test('a baseUrl without a known audit prefix or selected route is not logged', () => {
+    const record = security.safeRequestLog({ method: 'GET', baseUrl: '/HIDDEN_TOKEN', path: '/HIDDEN_KEY' });
+    assert.equal(record.route, '[unmatched]');
+});
+
 test('approved menu conflicts preserve their public code and whitelisted details', () => {
     const result = security.publicError(Object.assign(new Error('Produto alterado.'), {
         statusCode: 409, exposeDetails: true, code: 'PRODUTOS_ALTERADOS',
