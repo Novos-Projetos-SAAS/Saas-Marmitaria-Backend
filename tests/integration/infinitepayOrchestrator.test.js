@@ -193,19 +193,23 @@ describe('internal checkout reservation', { concurrency: false }, () => {
         assert.equal((await db('pedidos').where({ id: order.id }).first()).liberado_cozinha_em, null);
     });
 
-    for (const type of ['POSTERIOR', 'UNMAPPED', 'DEBITO']) {
+    for (const type of ['POSTERIOR', 'UNMAPPED', 'DEBITO', 'CARTAO_DEBITO', 'DINHEIRO']) {
         test('reservation refuses ' + type + ' without altering the legacy order or creating financial rows', async () => {
             let methodId = method.id;
             if (type !== 'POSTERIOR') {
                 const [other] = await db('metodos_pagamento').insert({ nome: 'Pix editável sintético ' + type,
-                    codigo: type === 'DEBITO' ? 'DEBITO' : null, tipo_financeiro: type === 'DEBITO' ? 'DEBITO' : 'OUTRO' }).returning('*');
+                    codigo: type === 'UNMAPPED' ? null : type,
+                    tipo_financeiro: type === 'CARTAO_DEBITO' ? 'DEBITO' : type === 'UNMAPPED' ? 'OUTRO' : type }).returning('*');
                 methodId = other.id;
             }
             const order = await orderFixture({ fluxo_pagamento: type === 'POSTERIOR' ? 'POSTERIOR' : 'INFINITEPAY', metodo_pagamento_id: methodId });
-            const service = await orchestrator();
-            await assert.rejects(service.prepareCheckout({ pedidoId: order.id, clientRequestId: randomUUID() }));
+            let calls = 0;
+            const service = await orchestrator({ async createCheckout() { calls++; return { checkoutUrl }; } });
+            await assert.rejects(service.prepareCheckout({ pedidoId: order.id, clientRequestId: randomUUID() }),
+                error => error.code === (type === 'POSTERIOR' ? 'POSTERIOR_ORDER' : 'PAYMENT_METHOD_NOT_MAPPED'));
             assert.deepEqual(await db('pedidos').where({ id: order.id }).first(), order);
             assert.equal(await db('pagamentos').where({ pedido_id: order.id }).count('* as n').first().then(row => Number(row.n)), 0);
+            assert.equal(calls, 0);
         });
     }
 
@@ -350,16 +354,45 @@ describe('internal checkout reservation', { concurrency: false }, () => {
         } finally { await db('config_infinitepay').where({ id: 1 }).update({ credencial_atual_id: credential.id }); }
     });
 
-    test('explicit CREDITO classification works with a renamed payment method and an uppercase UUID replays safely', async () => {
-        const [credit] = await db('metodos_pagamento').insert({ nome: 'Nome livre sintético', codigo: 'CREDITO', tipo_financeiro: 'CREDITO' }).returning('*');
-        const order = await orderFixture({ metodo_pagamento_id: credit.id });
-        const requestId = randomUUID();
+    for (const [codigo, id] of [['CARTAO_CREDITO', 5849], ['CREDITO', 7218]]) {
+        test('explicit ' + codigo + '/CREDITO works independently of names and IDs and an uppercase UUID replays safely', async () => {
+            const [credit] = await db('metodos_pagamento').insert({ id, nome: 'Dinheiro sintético ' + codigo, codigo, tipo_financeiro: 'CREDITO' }).returning('*');
+            const order = await orderFixture({ metodo_pagamento_id: credit.id });
+            const requestId = randomUUID();
+            let calls = 0;
+            const service = await orchestrator({ async createCheckout() { calls++; return { checkoutUrl }; } });
+            const result = await service.prepareCheckout({ pedidoId: order.id, clientRequestId: requestId.toUpperCase() });
+            assert.equal(result.status, 'AGUARDANDO');
+            await db('metodos_pagamento').where({ id: credit.id }).update({ nome: 'Débito sintético renomeado ' + codigo });
+            assert.equal((await service.prepareCheckout({ pedidoId: order.id, clientRequestId: requestId })).attemptId, result.attemptId);
+            assert.equal(calls, 1);
+            assert.equal(await db('pagamentos').where({ pedido_id: order.id }).count('* as n').first().then(row => Number(row.n)), 1);
+            assert.equal((await db('pedidos').where({ id: order.id }).first()).liberado_cozinha_em, null);
+        });
+    }
+
+    test('contradictory payment classifications never bind an order, create financial state or dispatch transport', async () => {
         let calls = 0;
         const service = await orchestrator({ async createCheckout() { calls++; return { checkoutUrl }; } });
-        const result = await service.prepareCheckout({ pedidoId: order.id, clientRequestId: requestId.toUpperCase() });
-        assert.equal(result.status, 'AGUARDANDO');
-        assert.equal((await service.prepareCheckout({ pedidoId: order.id, clientRequestId: requestId })).attemptId, result.attemptId);
-        assert.equal(calls, 1);
+        for (const [codigo, tipo_financeiro] of [['PIX', 'CREDITO'], ['CARTAO_CREDITO', 'OUTRO'],
+            ['CARTAO_CREDITO', 'DEBITO'], ['CARTAO_CREDITO', 'PIX'], ['CREDITO', 'DEBITO'],
+            ['CARTAO_DEBITO', 'CREDITO'], ['DINHEIRO', 'CREDITO']]) {
+            const original = await db('metodos_pagamento').where({ codigo }).first();
+            await db('metodos_pagamento').where({ id: original.id }).update({ tipo_financeiro });
+            try {
+                const order = await orderFixture({ metodo_pagamento_id: original.id });
+                const items = await db('itens_pedido').where({ pedido_id: order.id });
+                await assert.rejects(service.prepareCheckout({ pedidoId: order.id, clientRequestId: randomUUID() }),
+                    error => error.code === 'PAYMENT_METHOD_NOT_MAPPED');
+                assert.deepEqual(await db('pedidos').where({ id: order.id }).first(), order);
+                assert.deepEqual(await db('itens_pedido').where({ pedido_id: order.id }), items);
+                assert.equal(await db('pagamentos').where({ pedido_id: order.id }).count('* as n').first().then(row => Number(row.n)), 0);
+            } finally {
+                await db('metodos_pagamento').where({ id: original.id }).update({ tipo_financeiro: original.tipo_financeiro });
+            }
+        }
+        assert.equal(calls, 0);
+        assert.equal(await db('outbox_eventos').count('* as n').first().then(row => Number(row.n)), 0);
     });
 
     test('late failure cannot downgrade an independently advanced payment or release the kitchen', async () => {

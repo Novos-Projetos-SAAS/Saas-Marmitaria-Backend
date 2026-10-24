@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createTestDatabase, migrateBaseline, historicalOrder } from '../helpers/testDatabase.js';
+import { createTestDatabase, migrateBaseline, migrateInfinitepayFoundation, historicalOrder } from '../helpers/testDatabase.js';
 
 test('additive schema preserves synthetic historical IDs, totals, items and legacy kitchen eligibility', async () => {
     const f = await createTestDatabase();
@@ -8,7 +8,7 @@ test('additive schema preserves synthetic historical IDs, totals, items and lega
         await migrateBaseline(f.db);
         const order = await historicalOrder(f.db, { id: 701, methodId: 91 });
         const before = await f.db('pedidos').where({ id: order.id }).first();
-        await f.db.migrate.latest();
+        await migrateInfinitepayFoundation(f.db);
         const after = await f.db('pedidos').where({ id: order.id }).first();
         for (const key of Object.keys(before)) assert.deepEqual(after[key], before[key], key);
         assert.equal(after.fluxo_pagamento, 'POSTERIOR');
@@ -22,7 +22,7 @@ test('additive schema preserves synthetic historical IDs, totals, items and lega
         assert.equal(await f.db.schema.hasTable('pagamentos'), true);
         assert.deepEqual(await f.db('knex_migrations').select('*').orderBy('id'), migrationHistory);
         assert.equal((await f.db('pedidos').where({ id: 701 }).first()).valor_total, '20.00');
-        await f.db.migrate.latest();
+        await migrateInfinitepayFoundation(f.db);
         assert.equal((await f.db('config_infinitepay').first()).ativo, false);
     } finally { await f.close(); }
 });

@@ -1,6 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { createTestDatabase, migrateBaseline, historicalOrder } from '../helpers/testDatabase.js';
+import { createTestDatabase, migrateBaseline, migrateInfinitepayFoundation, historicalOrder } from '../helpers/testDatabase.js';
 
 const names = [
     '20261022000100_infinitepay_metodos_pedidos.js',
@@ -83,9 +83,9 @@ test('the four unchanged ups preserve every existing table, column, FK, index, I
         const before = await state(f.db, f.schema);
         const observed = collectQueries(f.db);
         let applied;
-        try { applied = await f.db.migrate.latest(); }
+        try { applied = await migrateInfinitepayFoundation(f.db); }
         finally { observed.stop(); }
-        assert.deepEqual(applied[1], names);
+        assert.deepEqual(applied, names);
         assertNoRemoval(observed.queries);
         const after = await state(f.db, f.schema);
         for (const table of before.tables) assert.equal(after.tables.includes(table), true, table);

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createTestDatabase, migrateBaseline } from '../helpers/testDatabase.js';
+import { createTestDatabase, migrateBaseline, migrateInfinitepayFoundation } from '../helpers/testDatabase.js';
 
 test('InfinitePay up preserves complete mixed historical orders, item money, snapshots and compositions', async () => {
     const fixture = await createTestDatabase();
@@ -73,7 +73,7 @@ test('InfinitePay up preserves complete mixed historical orders, item money, sna
         assert.deepEqual(contentBefore[0].slice(0, 3).map(item => [item.quantidade, item.preco_unitario, item.subtotal]),
             [[2, '22.35', '44.70'], [3, '4.25', '12.75'], [1, '26.00', '26.00']]);
 
-        await db.migrate.latest();
+        await migrateInfinitepayFoundation(db);
 
         const ordersAfter = await db('pedidos').select('*').orderBy('id');
         assert.deepEqual(ordersAfter.map(row => Object.fromEntries(Object.keys(ordersBefore[0]).map(key => [key, row[key]]))), ordersBefore);

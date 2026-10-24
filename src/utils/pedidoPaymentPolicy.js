@@ -14,9 +14,15 @@ export function rejeitarControleFinanceiro(input) {
     }
 }
 
+export function metodoPermiteInfinitepay(metodo) {
+    // CREDITO/CREDITO permanece como alias para cadastros anteriores.
+    return metodo?.tipo_financeiro === 'PIX' && metodo.codigo === 'PIX' ||
+        metodo?.tipo_financeiro === 'CREDITO' && ['CARTAO_CREDITO', 'CREDITO'].includes(metodo.codigo);
+}
+
 export function definirFluxoCriacao({ origem, metodo, habilitado, configAtiva }) {
     if (!['PUBLICO', 'ADMIN'].includes(origem)) lancarErro('Origem de pedido inválida.', 400);
-    const metodoOnline = ['PIX', 'CREDITO'].includes(metodo.codigo) && metodo.tipo_financeiro === metodo.codigo;
+    const metodoOnline = metodoPermiteInfinitepay(metodo);
     if (origem === 'PUBLICO' && habilitado === true && configAtiva === true && metodoOnline) {
         // A seleção futura já é confiável, mas esta etapa não cria checkout nem pedido online incompleto.
         lancarErro('Checkout online indisponível nesta etapa.', 503);

@@ -4,8 +4,9 @@ import { definirFluxoCriacao, rejeitarControleFinanceiro } from '../../src/utils
 
 const pix = { id: 934, nome: 'Dinheiro renomeado', codigo: 'PIX', tipo_financeiro: 'PIX' };
 const credito = { id: 721, nome: 'Nome personalizado', codigo: 'CREDITO', tipo_financeiro: 'CREDITO' };
+const cartaoCredito = { id: 5849, nome: 'Débito renomeado', codigo: 'CARTAO_CREDITO', tipo_financeiro: 'CREDITO' };
 
-for (const metodo of [pix, credito]) {
+for (const metodo of [pix, credito, cartaoCredito]) {
     test('public origin cannot bypass future online selection by claiming Presencial for ' + metodo.codigo, () => {
         assert.throws(() => definirFluxoCriacao({ origem: 'PUBLICO', metodo, habilitado: true, configAtiva: true,
             tipo_pedido: 'Presencial', fluxo_pagamento: 'POSTERIOR' }), error => error.statusCode === 503);
@@ -19,16 +20,23 @@ for (const metodo of [pix, credito]) {
     });
 }
 
-for (const [codigo, nome] of [['DINHEIRO', 'Pix'], ['DEBITO', 'Cartão de Crédito'], ['OUTRO', 'PIX InfinitePay']]) {
+for (const [codigo, tipo, nome] of [['DINHEIRO', 'DINHEIRO', 'Pix'], ['DEBITO', 'DEBITO', 'Cartão de Crédito'],
+    ['CARTAO_DEBITO', 'DEBITO', 'Pix'], ['OUTRO', 'OUTRO', 'PIX InfinitePay']]) {
     test('stable classification preserves posterior method ' + codigo + ' independently of its name', () => {
-        assert.equal(definirFluxoCriacao({ origem: 'PUBLICO', metodo: { id: 802, nome, codigo, tipo_financeiro: codigo },
+        assert.equal(definirFluxoCriacao({ origem: 'PUBLICO', metodo: { id: 802, nome, codigo, tipo_financeiro: tipo },
             habilitado: true, configAtiva: true }), 'POSTERIOR');
     });
 }
 
 test('unmapped and inconsistent methods never become gateway methods based on names or IDs', () => {
     for (const metodo of [{ id: 1, nome: 'Pix', codigo: null, tipo_financeiro: 'OUTRO' },
-        { id: 3, nome: 'Crédito', codigo: 'CREDITO', tipo_financeiro: 'OUTRO' }]) {
+        { id: 3, nome: 'Crédito', codigo: 'CREDITO', tipo_financeiro: 'OUTRO' },
+        { id: 934, nome: 'Pix', codigo: 'PIX', tipo_financeiro: 'CREDITO' },
+        { id: 5849, nome: 'Crédito', codigo: 'CARTAO_CREDITO', tipo_financeiro: 'OUTRO' },
+        { id: 5849, nome: 'Crédito', codigo: 'CARTAO_CREDITO', tipo_financeiro: 'DEBITO' },
+        { id: 5849, nome: 'Crédito', codigo: 'CARTAO_CREDITO', tipo_financeiro: 'PIX' },
+        { id: 5849, nome: 'Crédito', codigo: 'CARTAO_DEBITO', tipo_financeiro: 'CREDITO' },
+        { id: 5849, nome: 'Crédito', codigo: 'DINHEIRO', tipo_financeiro: 'CREDITO' }]) {
         assert.equal(definirFluxoCriacao({ origem: 'PUBLICO', metodo, habilitado: true, configAtiva: true }), 'POSTERIOR');
     }
 });

@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { decryptApiKey } from '../utils/infinitepayCredentials.js';
 import { buildCheckoutPayload, checkoutValidUntil, InfinitepayClientError } from './infinitepayClient.js';
+import { metodoPermiteInfinitepay } from '../utils/pedidoPaymentPolicy.js';
 
 class PaymentPreparationError extends Error {
     constructor(code, statusCode = 409) {
@@ -65,7 +66,7 @@ export function createPaymentOrchestrator({ db, client, redirectUrl, webhookUrl,
             if (!order) refuse('ORDER_NOT_FOUND', 404);
             if (order.fluxo_pagamento !== 'INFINITEPAY') refuse('POSTERIOR_ORDER');
             const method = await trx('metodos_pagamento').where({ id: order.metodo_pagamento_id, ativo: true }).whereNull('deletado_em').first();
-            if (!method || !['PIX', 'CREDITO'].includes(method.codigo) || method.codigo !== method.tipo_financeiro) refuse('PAYMENT_METHOD_NOT_MAPPED');
+            if (!metodoPermiteInfinitepay(method)) refuse('PAYMENT_METHOD_NOT_MAPPED');
             const items = await trx('itens_pedido').where({ pedido_id: pedidoId }).orderBy('id').forShare();
             const composition = await trx('composicao_item_pedido').whereIn('item_pedido_id', items.map(item => item.id))
                 .orderBy('item_pedido_id').orderBy('alimento_id').forShare();

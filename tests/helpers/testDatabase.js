@@ -7,6 +7,15 @@ export async function migrateBaseline(db) {
     const names = (await readdir(migrations)).filter(name => name.endsWith('.js') && name < '20261022').sort();
     for (const name of names) await db.migrate.up({ name });
 }
+export async function migrateInfinitepayFoundation(db) {
+    const names = (await readdir(migrations)).filter(name => name.startsWith('20261022') && name.endsWith('.js')).sort();
+    const completed = new Set((await db('knex_migrations').select('name')).map(row => row.name));
+    const applied = [];
+    for (const name of names) {
+        if (!completed.has(name)) applied.push(...(await db.migrate.up({ name }))[1]);
+    }
+    return applied;
+}
 export async function historicalOrder(db, { id = 1, methodId = 17 } = {}) {
     await db('metodos_pagamento').insert({ id: methodId, nome: 'Método sintético ' + methodId });
     const [size] = await db('tamanhos_marmitas').insert({ nome: 'M sintética '+id, preco_base: 20 }).returning('*');
