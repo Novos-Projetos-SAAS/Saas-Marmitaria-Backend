@@ -29,7 +29,8 @@ router.post('/retomar', jsonOnly, async (req, res) => {
 });
 router.post('/infinitepay/webhook', jsonOnly, async (req, res) => {
     await runtime(req).receiveEvent(req.body);
-    res.status(202).json({ status: 'accepted' });
+    // Acknowledges durable receipt only; payment confirmation runs independently.
+    res.status(200).json({ status: 'accepted' });
 });
 router.get('/infinitepay/retorno', async (req, res) => {
     res.redirect(303, await runtime(req).receiveReturn(req.query));

@@ -134,14 +134,92 @@ describe('Fase 2D HTTP wiring with simulated providers only', { concurrency: fal
     test('invalid events are rejected, duplicate delivery is durable and acknowledgement never proves payment', async () => {
         install({ creationEnabled: async () => true }); proof = { paid: false };
         const f = await order(); await begin(f);
+        const countBefore = Number((await db('pagamentos_eventos').count('* as n').first()).n);
+        const checksBefore = checkCalls;
         for (const body of [{ type: 'invented' }, { type: 'paid', order_nsu: ' ' }, { type: 'paid', transaction_nsu: null, slug: '' }]) assert.equal((await request('/infinitepay/webhook', { method: 'POST', body })).status, 400);
+        assert.equal((await request('/infinitepay/webhook', { method: 'POST', body: { type: 'paid' }, headers: { 'Content-Type': 'text/plain' } })).status, 415);
+        const malformed = await fetch(base + '/infinitepay/webhook', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{"type":' });
+        assert.equal(malformed.status, 400);
+        assert.equal(Number((await db('pagamentos_eventos').count('* as n').first()).n), countBefore);
         const first = await event(f), second = await event(f);
-        assert.equal(first.status, 202); assert.deepEqual(await first.json(), { status: 'accepted' }); assert.equal(second.status, 202);
+        assert.equal(first.status, 200); assert.deepEqual(await first.json(), { status: 'accepted' }); assert.equal(second.status, 200);
+        assert.equal(checkCalls, checksBefore);
         const payment = await db('pagamentos').where({ pedido_id: f.row.id }).first();
         assert.equal(Number((await db('pagamentos_eventos').whereRaw("payload_filtrado->>'orderNsu' = ?", [payment.order_nsu]).count('* as n').first()).n), 1);
         assert.equal((await db('pedidos').where({ id: f.row.id }).first()).liberado_cozinha_em, null);
         await runtime.processPending({ limit: 30 });
         assert.equal((await db('pedidos').where({ id: f.row.id }).first()).liberado_cozinha_em, null);
+    });
+    test('webhook acknowledges only after the database releases and commits the event insert', async () => {
+        install({ creationEnabled: async () => true }); proof = { paid: false };
+        const f = await order(); await begin(f);
+        const payment = await db('pagamentos').where({ pedido_id: f.row.id }).first();
+        const blocker = await db.transaction();
+        let responsePromise, responded = false;
+        const checksBefore = checkCalls;
+        try {
+            await blocker.raw('LOCK TABLE pagamentos_eventos IN SHARE MODE');
+            const pid = (await blocker.raw('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+            responsePromise = event(f).then(response => { responded = true; return response; });
+            const { setTimeout: pause } = await import('node:timers/promises');
+            const deadline = Date.now() + 5000;
+            let waiting = false;
+            while (Date.now() < deadline) {
+                waiting = (await db.raw('SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE ? = ANY(pg_blocking_pids(pid))) AS waiting', [pid])).rows[0].waiting;
+                if (waiting) break;
+                await pause(10);
+            }
+            assert.equal(waiting, true, 'the real insert must reach the PostgreSQL lock');
+            assert.equal(responded, false, 'no acknowledgement before durable persistence');
+            assert.equal(await db('pagamentos_eventos').whereRaw("payload_filtrado->>'orderNsu' = ?", [payment.order_nsu]).first(), undefined);
+            await blocker.commit();
+            const response = await responsePromise;
+            assert.equal(response.status, 200);
+            assert.deepEqual(await response.json(), { status: 'accepted' });
+            const saved = await db('pagamentos_eventos').whereRaw("payload_filtrado->>'orderNsu' = ?", [payment.order_nsu]).first();
+            assert.equal(saved.status_processamento, 'PENDENTE');
+            assert.equal(saved.tentativas, 0);
+            assert.equal(checkCalls, checksBefore);
+            assert.equal((await db('pagamentos').where({ id: payment.id }).first()).status, 'AGUARDANDO');
+            assert.equal((await db('pedidos').where({ id: f.row.id }).first()).liberado_cozinha_em, null);
+        } finally {
+            if (!blocker.isCompleted()) await blocker.rollback();
+            if (responsePromise) await responsePromise;
+        }
+    });
+    test('a real persistence failure is not acknowledged and a later delivery remains recoverable', async () => {
+        install({ creationEnabled: async () => true });
+        const f = await order(); await begin(f);
+        const before = await db('pagamentos_eventos').select('*');
+        const paymentBefore = await db('pagamentos').where({ pedido_id: f.row.id }).first();
+        const checksBefore = checkCalls;
+        let response;
+        // This fixture owns a random schema in the guarded disposable PostgreSQL only.
+        await db.schema.renameTable('pagamentos_eventos', 'pagamentos_eventos_ack_failure');
+        try { response = await event(f); }
+        finally { await db.schema.renameTable('pagamentos_eventos_ack_failure', 'pagamentos_eventos'); }
+        assert.equal(response.status, 503);
+        const body = await response.json();
+        assert.notEqual(body.status, 'accepted');
+        for (const secret of ['SYNTHETIC_2D_KEY', 'pagamentos_eventos_ack_failure', 'EVENT_STORAGE_FAILED']) assert.equal(JSON.stringify(body).includes(secret), false);
+        assert.deepEqual(await db('pagamentos_eventos').select('*'), before);
+        assert.deepEqual(await db('pagamentos').where({ id: paymentBefore.id }).first(), paymentBefore);
+        assert.equal((await db('pedidos').where({ id: f.row.id }).first()).liberado_cozinha_em, null);
+        const retried = await event(f);
+        assert.equal(retried.status, 200);
+        assert.equal(Number((await db('pagamentos_eventos').whereRaw("payload_filtrado->>'orderNsu' = ?", [paymentBefore.order_nsu]).count('* as n').first()).n), 1);
+        assert.equal(checkCalls, checksBefore);
+    });
+    test('a valid event awaiting identification is durably acknowledged but remains pending', async () => {
+        install({ creationEnabled: async () => true });
+        const checksBefore = checkCalls;
+        const body = { type: 'created' };
+        assert.equal((await request('/infinitepay/webhook', { method: 'POST', body })).status, 200);
+        const saved = await db('pagamentos_eventos').where({ tipo_evento: 'created', status_processamento: 'PENDENTE_IDENTIFICACAO' }).orderBy('id', 'desc').first();
+        assert.ok(saved);
+        assert.equal(saved.pagamento_id, null);
+        assert.equal(saved.tentativas, 0);
+        assert.equal(checkCalls, checksBefore);
     });
     test('valid nonce correlates browser return, grants STATUS only and strips provider data in 303', async () => {
         const f = await order(); await begin(f);
