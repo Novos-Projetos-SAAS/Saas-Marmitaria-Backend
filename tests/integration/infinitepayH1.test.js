@@ -4,6 +4,7 @@ import { randomBytes, randomUUID, createHash, createDecipheriv } from 'node:cryp
 import { createTestDatabase } from '../helpers/testDatabase.js';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { request as httpRequest } from 'node:http';
 
 const origin = 'https://h1.invalid.test';
 const webhook = '/pagamentos/infinitepay/webhook', retorno = '/pagamentos/infinitepay/retorno';
@@ -31,6 +32,44 @@ describe('H1 isolated observation server, no financial approval', { concurrency:
         return JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, 'base64')), decipher.final()]).toString('utf8'));
     }
     const request = (path, options = {}) => fetch(base + path, { redirect: 'manual', ...options });
+    test('direct callers cannot forge Cloudflare or forwarded identity, even using the public Host', async () => {
+        for (const headers of [
+            { 'X-Forwarded-For': '203.0.113.1' },
+            { 'CF-Connecting-IP': '203.0.113.2' },
+            { Host: new URL(origin).host, 'CF-Connecting-IP': '203.0.113.3', 'X-Forwarded-For': '203.0.113.4' }
+        ]) assert.equal((await request(retorno, { headers })).status, 403);
+    });
+    test('only a verified tunnel connection uses CF-Connecting-IP; injected XFF does not reset its rate limit', async () => {
+        let verified = true;
+        const app = module.createH1App({ db, captureKey, publicOrigin: origin, log: () => {},
+            verifyProxy: async () => verified });
+        assert.notEqual(app.get('trust proxy'), true);
+        const proxyServer = app.listen(0, '127.0.0.1');
+        await new Promise(resolve => proxyServer.once('listening', resolve));
+        const url = 'http://127.0.0.1:' + proxyServer.address().port + retorno;
+        const call = (ip, forged) => new Promise((resolve, reject) => {
+            const req = httpRequest(url, { headers: { Host: new URL(origin).host,
+                'CF-Connecting-IP': ip, 'X-Forwarded-For': forged, Forwarded: 'for=203.0.113.99' } }, res => {
+                res.resume(); res.once('end', () => resolve({ status: res.statusCode, headers: new Map(Object.entries(res.headers)) }));
+            }); req.once('error', reject); req.end();
+        });
+        try {
+            const a = await call('203.0.113.20', '198.51.100.1');
+            const b = await call('203.0.113.20', '198.51.100.2');
+            const c = await call('203.0.113.21', '198.51.100.2');
+            assert.equal(a.status, 200); assert.equal(b.status, 200); assert.equal(c.status, 200);
+            assert.equal(Number(b.headers.get('ratelimit-remaining')), Number(a.headers.get('ratelimit-remaining')) - 1);
+            assert.equal(c.headers.get('ratelimit-remaining'), a.headers.get('ratelimit-remaining'));
+            for (let i = 0; i < 118; i++) assert.equal((await call('203.0.113.20', '198.51.100.' + (i + 3))).status, 200);
+            assert.equal((await call('203.0.113.20', '192.0.2.1')).status, 429);
+            assert.equal((await call('bad-ip', '192.0.2.1')).status, 403);
+            verified = false;
+            assert.equal((await call('203.0.113.21', '192.0.2.1')).status, 403);
+            verified = true;
+            assert.equal((await call('2001:db8::1', '192.0.2.1')).status, 200);
+            assert.equal((await call('2001:db8::2', '192.0.2.2')).headers.get('ratelimit-remaining'), '118');
+        } finally { proxyServer.closeAllConnections(); await new Promise(resolve => proxyServer.close(resolve)); }
+    });
     test('startup settings refuse production, test mode, activation and any database fallback', () => {
         const settings = { purpose: 'INFINITEPAY_H1_ONLY', host: '127.0.0.1', port: 55440,
             database: 'infinitepay_h1_homologacao', user: 'codex_h1_owner', handle: 'matheuszxp',
@@ -174,6 +213,18 @@ try {
                 assert.equal((await response.text()).includes('accepted'), false);
             } finally { await new Promise(resolve => failedServer.close(resolve)); }
         });
+    });
+    test('an unhomologated return is encrypted before correlation rejects it, preserving evidence without approving payment', async () => {
+        const marker = 'SYNTHETIC_RETURN_PRIVATE_' + randomUUID();
+        const response = await request(retorno + '?' + new URLSearchParams({ unexpected_provider_field: marker }));
+        assert.equal(response.status, 400);
+        const rows = await db('pagamentos_eventos').where({ tipo_evento: 'H1_OBSERVACAO_RETURN' });
+        const captured = rows.filter(row => open(row).body.includes(marker));
+        assert.equal(captured.length, 1);
+        assert.equal(captured[0].status_processamento, 'PENDENTE_IDENTIFICACAO');
+        assert.equal(JSON.stringify(captured[0]).includes(marker), false);
+        assert.equal(JSON.stringify(logs).includes(marker), false);
+        assert.equal(Number((await db('pedidos').whereNotNull('liberado_cozinha_em').count('* as n').first()).n), 0);
     });
     test('correlated synthetic return reuses runtime validation and never approves payment or dispatches kitchen events', async () => {
         const [method] = await db('metodos_pagamento').insert({ nome: 'Método H1 sintético', codigo: 'PIX', tipo_financeiro: 'PIX' }).returning('*');

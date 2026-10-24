@@ -5,6 +5,7 @@ import { createInfinitepayRuntime } from '../infinitepayRuntime.js';
 import paymentRoutes from '../routes/Pagamentos.Routes.js';
 import { buildCheckoutPayload, InfinitepayClientError } from '../services/infinitepayClient.js';
 import { createInfinitepayCheckClient } from '../services/infinitepayCheckClient.js';
+import { h1ProxyHeaders, trustH1Proxy } from './infinitepayH1Proxy.js';
 
 export const H1_WEBHOOK = '/pagamentos/infinitepay/webhook';
 export const H1_RETURN = '/pagamentos/infinitepay/retorno';
@@ -176,10 +177,11 @@ export function createH1ObservationAdapters({ db, captureKey, publicOrigin, allo
     return { checkoutClient, checkClient };
 }
 
-export function createH1App({ db, captureKey, publicOrigin, log = entry => console.info(JSON.stringify(entry)) }) {
+export function createH1App({ db, captureKey, publicOrigin, verifyProxy = async () => false, log = entry => console.info(JSON.stringify(entry)) }) {
     const origin = originUrl(publicOrigin);
     if (!Buffer.isBuffer(captureKey) || captureKey.length !== 32 || typeof log !== 'function') throw unavailable();
     const app = express(); app.disable('x-powered-by');
+    app.set('trust proxy', trustH1Proxy);
     const adapters = createH1ObservationAdapters({ db, captureKey, publicOrigin });
     const runtime = createInfinitepayRuntime({ db, ...adapters, redirectUrl: publicOrigin + H1_RETURN,
         webhookUrl: publicOrigin + H1_WEBHOOK, successUrl: publicOrigin + H1_RETURN,
@@ -197,6 +199,7 @@ export function createH1App({ db, captureKey, publicOrigin, log = entry => conso
         if (req.method !== method) return res.set('Allow', method).status(405).end();
         req.auditBase = '/pagamentos'; next();
     });
+    app.use(h1ProxyHeaders({ publicHost: origin.host, verifyProxy }));
     app.use(rateLimit({ windowMs: 60000, limit: 120, standardHeaders: true, legacyHeaders: false }));
     app.post(H1_WEBHOOK, (req, res, next) => {
         if (!req.is('application/json')) return res.status(415).json({ status: 'fail' });
@@ -209,6 +212,9 @@ export function createH1App({ db, captureKey, publicOrigin, log = entry => conso
         } catch { throw unavailable(); }
     });
     app.get(H1_RETURN, async (req, res, next) => {
+        if (Object.keys(req.query).some(name => name !== 'ref')) {
+            await observe(db, captureKey, 'RETURN', { body: JSON.stringify(req.query), headers: safeHeaders(req.headers) });
+        }
         if (Object.keys(req.query).length === 0 || (Object.keys(req.query).length === 1 && typeof req.query.ref === 'string')) {
             if (req.query.ref) await runtime.authorize(req.query.ref, 'STATUS');
             return res.type('html').send('<!doctype html><html lang="pt-BR"><meta charset="utf-8"><title>Homologação H1</title><p>Endpoint de retorno H1 acessível. O recebimento não confirma pagamento.</p></html>');

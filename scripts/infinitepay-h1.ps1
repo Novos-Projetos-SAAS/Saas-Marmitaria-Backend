@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Postgres', 'Backend', 'Tunnel', 'Verify', 'Status', 'Credential', 'Stop', 'CreateLink', 'Result')]
+    [ValidateSet('Postgres', 'Backend', 'Tunnel', 'Verify', 'Status', 'Credential', 'Stop', 'CreateLink', 'Result', 'ValidateLink', 'ViewCheckout', 'Events')]
     [string]$Action
 )
 $ErrorActionPreference = 'Stop'
@@ -115,7 +115,8 @@ switch ($Action) {
         return
     }
 }
-$nodeAction = @{ Backend = 'serve'; Verify = 'verify'; Status = 'status'; CreateLink = 'create-link'; Result = 'result' }[$Action]
+$nodeAction = @{ Backend = 'serve'; Verify = 'verify'; Status = 'status'; CreateLink = 'create-link'; Result = 'result';
+    ValidateLink = 'validate-link'; ViewCheckout = 'checkout-url'; Events = 'events' }[$Action]
 if ($Action -eq 'Backend' -and (Get-ManagedProcess 'backend_pid' (Get-Command node.exe).Source)) { throw 'O backend H1 já está em execução.' }
 $variables = @('NODE_ENV', 'INFINITEPAY_CHECKOUT_ENABLED', 'DATABASE_URL', 'PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'TEST_DATABASE_URL',
     'H1_SETTINGS_FILE', 'H1_DB_PASSWORD', 'H1_OBSERVATION_KEY', 'H1_API_KEY', 'INFINITEPAY_ENCRYPTION_KEY', 'INFINITEPAY_ENCRYPTION_KEYS',

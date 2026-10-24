@@ -4,7 +4,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { PassThrough } from 'node:stream';
 import knex from 'knex';
 import { createTestDatabase } from '../helpers/testDatabase.js';
-import { createH1App, decryptH1Observation } from '../../src/homologation/infinitepayH1.js';
+import { createH1App, decryptH1Observation, encryptH1Observation } from '../../src/homologation/infinitepayH1.js';
 
 const publicOrigin = 'https://h1-synthetic.trycloudflare.com';
 const handle = 'matheuszxp', apiKey = 'SYNTHETIC_H1_ONLY_NOT_A_REAL_KEY';
@@ -24,6 +24,79 @@ describe('operator-confirmed single H1 link, simulated provider only', { concurr
         }
     });
     const options = extra => ({ db, captureKey, publicOrigin, handle, apiKey, ...extra });
+    test('the existing observed url is validated in a read-only transaction, without confirming or dispatching again', async () => {
+        const checkoutUrl = 'https://checkout.infinitepay.io/synthetic-only?reference=PRIVATE_FIXTURE';
+        let calls = 0;
+        await module.executeH1SingleLink(options({ transport: async () => {
+            calls++; return new Response(JSON.stringify({ url: checkoutUrl }), { status: 200 });
+        } }));
+        const before = {};
+        for (const table of ['pagamentos', 'pedidos', 'pagamentos_eventos', 'outbox_eventos', 'config_infinitepay']) before[table] = await db(table).orderBy('id');
+        const proof = await module.readH1ExistingCheckout(options());
+        assert.equal(proof.url, checkoutUrl); assert.equal(proof.origin, 'https://checkout.infinitepay.io');
+        assert.equal(proof.attempt_status, 'INCERTA'); assert.equal(proof.financial_confirmation, false);
+        assert.equal(proof.callbacks_match, true); assert.equal(proof.read_only, true);
+        assert.equal((await module.readH1ExistingCheckout(options({ publicOrigin: 'https://changed.trycloudflare.com' }))).callbacks_match, false);
+        const output = new PassThrough(); output.isTTY = false;
+        assert.throws(() => module.showH1Checkout(proof, { output }));
+        output.isTTY = true; let displayed = ''; output.on('data', chunk => { displayed += chunk; });
+        module.showH1Checkout(proof, { output }); assert.ok(displayed.includes(checkoutUrl));
+        assert.throws(() => module.showH1Checkout({ ...proof, callbacks_match: false }, { output }));
+        assert.throws(() => module.showH1Checkout({ ...proof, expired: true }, { output }));
+        assert.equal(calls, 1);
+        for (const table of Object.keys(before)) assert.deepEqual(await db(table).orderBy('id'), before[table]);
+        assert.equal((await db('pagamentos').first()).checkout_url, null);
+    });
+    test('malformed, ambiguous, non-HTTPS and unauthorized destinations are rejected without exposing their values', () => {
+        const good = 'https://checkout.infinitepay.io/synthetic';
+        assert.equal(module.validateH1CheckoutUrl({ url: good }), good);
+        for (const value of [null, [], {}, { link: good }, { url: null }, { url: 'string' },
+            ...['http://checkout.infinitepay.io/x', 'https://checkout.infinitepay.io.evil.test/x',
+                'https://checkout.infinitepay.io@evil.test/x', 'https://user@checkout.infinitepay.io/x',
+                'https://checkout.infinitepay.io:444/x', 'https://checkout.infinitepay.io./x',
+                'https://checkout.infinitepay.io/x#secret', ' ' + good, good + '\n', good + '\\evil',
+                good + '?x=%0d%0aPRIVATE', good + '?x=%zz'].map(url => ({ url }))]) {
+            assert.throws(() => module.validateH1CheckoutUrl(value), error => !String(error).includes('PRIVATE'));
+        }
+    });
+    test('read-only checkout inspection rejects tampered captures, unexpected status and conflicting reservations', async () => {
+        await module.executeH1SingleLink(options({ transport: async () => new Response(JSON.stringify({ url: 'https://checkout.infinitepay.io/synthetic' }), { status: 200 }) }));
+        const row = await db('pagamentos_eventos').where({ tipo_evento: 'H1_OBSERVACAO_LINKS' }).first();
+        const observed = decryptH1Observation(row.payload_filtrado, captureKey);
+        await db('pagamentos_eventos').where({ id: row.id }).update({ payload_filtrado: encryptH1Observation({ ...observed, status: 500 }, captureKey) });
+        await assert.rejects(module.readH1ExistingCheckout(options()));
+        await db('pagamentos_eventos').where({ id: row.id }).update({ payload_filtrado: row.payload_filtrado });
+        const bad = structuredClone(row.payload_filtrado); bad.tag = randomBytes(16).toString('base64');
+        await db('pagamentos_eventos').where({ id: row.id }).update({ payload_filtrado: bad });
+        await assert.rejects(module.readH1ExistingCheckout(options()));
+        await db('pagamentos_eventos').where({ id: row.id }).update({ payload_filtrado: row.payload_filtrado });
+        await db('pagamentos_eventos').insert({ event_key: 'synthetic-second-capture', tipo_evento: 'H1_OBSERVACAO_LINKS', payload_filtrado: row.payload_filtrado });
+        await assert.rejects(module.readH1ExistingCheckout(options()));
+    });
+    test('API Key echoed in literal, partially, fully or repeatedly encoded form never reaches the operator URL', async () => {
+        await module.executeH1SingleLink(options({ transport: async () => new Response(JSON.stringify({ url: 'https://checkout.infinitepay.io/synthetic' }), { status: 200 }) }));
+        const row = await db('pagamentos_eventos').where({ tipo_evento: 'H1_OBSERVACAO_LINKS' }).first();
+        const observed = decryptH1Observation(row.payload_filtrado, captureKey);
+        const encoded = [...apiKey].map(char => '%' + char.charCodeAt(0).toString(16)).join('');
+        for (const value of [apiKey, '%' + apiKey.charCodeAt(0).toString(16) + apiKey.slice(1), encoded, encoded.replaceAll('%', '%25')]) {
+            await db('pagamentos_eventos').where({ id: row.id }).update({ payload_filtrado: encryptH1Observation({ ...observed,
+                body: JSON.stringify({ url: 'https://checkout.infinitepay.io/synthetic?x=' + value }) }, captureKey) });
+            await assert.rejects(module.readH1ExistingCheckout(options()), error => !String(error).includes(apiKey));
+        }
+    });
+    test('event consultation shows metadata and field types only, without leaking callback secrets or making requests', async () => {
+        await module.executeH1SingleLink(options({ transport: async () => new Response(JSON.stringify({ url: 'https://checkout.infinitepay.io/PRIVATE_FIXTURE' }), { status: 200 }) }));
+        await db('pagamentos_eventos').insert({ event_key: 'h1:synthetic-webhook', tipo_evento: 'H1_OBSERVACAO_WEBHOOK',
+            payload_filtrado: encryptH1Observation({ body: JSON.stringify({ observed_identifier: 'PRIVATE_REAL_LIKE_ID', paid: true }), headers: { 'x-provider-signature': 'PRIVATE_SIGNATURE' } }, captureKey),
+            status_processamento: 'PENDENTE_IDENTIFICACAO' });
+        const summary = await module.readH1Events(options());
+        assert.equal(summary.read_only, true); assert.equal(summary.financial_confirmation, false);
+        const event = summary.events.find(row => row.type === 'H1_OBSERVACAO_WEBHOOK');
+        assert.deepEqual(event.body_structure, { observed_identifier: 'string', paid: 'boolean' });
+        assert.ok(event.header_names.includes('x-provider-signature'));
+        assert.equal(/PRIVATE|SYNTHETIC_H1_ONLY/.test(JSON.stringify(summary)), false);
+        assert.equal((await db('pagamentos').first()).status, 'INCERTA');
+    });
     test('confirmation accepts only the exact typed phrase on an interactive terminal', async () => {
         for (const [answer, expected] of [['CRIAR H1 100 CENTAVOS', true], ['sim', false], ['', false], [' CRIAR H1 100 CENTAVOS', false]]) {
             const input = new PassThrough(), output = new PassThrough(); input.isTTY = true; output.isTTY = true;
