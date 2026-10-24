@@ -5,23 +5,25 @@ import { dirname, join } from 'node:path';
 import { validateH1Settings, assertH1Database, createH1App, listenH1 } from '../src/homologation/infinitepayH1.js';
 import { verifyH1Endpoints, confirmH1Link, executeH1SingleLink, readH1LinkResult, readH1ExistingCheckout, showH1Checkout, readH1Events } from '../src/homologation/infinitepayH1SingleLink.js';
 import { createH1ProxyVerifier } from '../src/homologation/infinitepayH1Proxy.js';
+import { inspectH2Check, executeH2Check, readH2CheckResult } from '../src/homologation/infinitepayH2Check.js';
 
 const action = process.argv[2];
 let db, server;
 async function main() {
-    if (!['serve', 'status', 'verify', 'create-link', 'result', 'validate-link', 'checkout-url', 'events'].includes(action) || !process.env.H1_SETTINGS_FILE) throw new Error();
+    if (!['serve', 'status', 'verify', 'create-link', 'result', 'validate-link', 'checkout-url', 'events',
+        'check-evidence', 'check-payment', 'check-result'].includes(action) || !process.env.H1_SETTINGS_FILE) throw new Error();
     const settings = JSON.parse((await readFile(process.env.H1_SETTINGS_FILE, 'utf8')).replace(/^\uFEFF/, ''));
     validateH1Settings(settings);
     if (!process.env.H1_DB_PASSWORD || !/^[A-Za-z0-9+/]{43}=$/.test(process.env.H1_OBSERVATION_KEY || '')) throw new Error();
     const captureKey = Buffer.from(process.env.H1_OBSERVATION_KEY, 'base64');
     const apiKey = process.env.H1_API_KEY;
-    if (['create-link', 'result', 'validate-link', 'checkout-url', 'events'].includes(action)) {
+    if (['create-link', 'result', 'validate-link', 'checkout-url', 'events', 'check-evidence', 'check-payment', 'check-result'].includes(action)) {
         process.env.INFINITEPAY_ENCRYPTION_KEYS = JSON.stringify({ 1: captureKey.toString('base64') });
         process.env.INFINITEPAY_ENCRYPTION_KEY_VERSION = '1';
     }
     db = knex({ client: 'pg', connection: { host: settings.host, port: settings.port, database: settings.database,
         user: settings.user, password: process.env.H1_DB_PASSWORD, ssl: false, application_name: 'infinitepay-h1-local',
-        ...(['validate-link', 'checkout-url', 'events'].includes(action) ? { options: '-c default_transaction_read_only=on' } : {}) },
+        ...(['validate-link', 'checkout-url', 'events', 'check-evidence', 'check-result'].includes(action) ? { options: '-c default_transaction_read_only=on' } : {}) },
         pool: { min: 0, max: 4 }, acquireConnectionTimeout: 5000 });
     delete process.env.H1_DB_PASSWORD; delete process.env.H1_OBSERVATION_KEY; delete process.env.H1_API_KEY;
     const identity = await assertH1Database(db);
@@ -39,6 +41,14 @@ async function main() {
     }
     if (action === 'result') {
         console.info(JSON.stringify(await readH1LinkResult({ db, captureKey }), null, 2));
+        return;
+    }
+    if (['check-evidence', 'check-payment', 'check-result'].includes(action)) {
+        if (settings.handle !== 'matheuszxp') throw new Error();
+        const options = { db, captureKey };
+        const result = action === 'check-evidence' ? await inspectH2Check(options) : action === 'check-result' ?
+            await readH2CheckResult(options) : await executeH2Check({ ...options, apiKey, transport: globalThis.fetch });
+        console.info(JSON.stringify(result, null, 2));
         return;
     }
     if (action === 'events') {

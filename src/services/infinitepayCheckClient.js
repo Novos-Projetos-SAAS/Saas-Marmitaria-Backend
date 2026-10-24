@@ -41,7 +41,7 @@ function httpsUrl(value) {
     return url;
 }
 
-function normalizedPayment(parsed, expected, allowedOrigins) {
+export function normalizedPayment(parsed, expected, allowedOrigins) {
     record(parsed);
     const { paid, amount, paidAmount, installments, captureMethod, financialState, receiptUrl, identifiers } = parsed;
     if (typeof paid !== 'boolean') throw invalid();
