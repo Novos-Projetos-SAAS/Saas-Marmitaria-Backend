@@ -1,5 +1,0 @@
-# Configuracoes locais e segredos jamais devem ser versionados.
-environments/*.bru
-!environments/local.example.bru
-*.env
-.env
