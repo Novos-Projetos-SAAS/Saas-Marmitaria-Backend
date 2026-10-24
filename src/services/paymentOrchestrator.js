@@ -52,8 +52,9 @@ function snapshot(order, items, composition, method) {
     return { total, payloadHash: hash(JSON.stringify(content)) };
 }
 
-export function createPaymentOrchestrator({ db, client, redirectUrl, webhookUrl, now = () => new Date() } = {}) {
-    if (!db || typeof db.transaction !== 'function' || typeof client?.createCheckout !== 'function' || typeof now !== 'function') {
+export function createPaymentOrchestrator({ db, client, redirectUrl, webhookUrl, now = () => new Date(), orderNsuPrefix = 'PED' } = {}) {
+    if (!db || typeof db.transaction !== 'function' || typeof client?.createCheckout !== 'function' || typeof now !== 'function' ||
+        typeof orderNsuPrefix !== 'string' || !/^[A-Z][A-Z0-9-]{0,31}$/.test(orderNsuPrefix)) {
         refuse('PREPARATION_BLOCKED', 503);
     }
     const returnBase = safeUrl(redirectUrl);
@@ -88,7 +89,7 @@ export function createPaymentOrchestrator({ db, client, redirectUrl, webhookUrl,
         const nonce = randomBytes(32).toString('base64url');
         const returnUrl = new URL(returnBase);
         returnUrl.searchParams.set('r', nonce);
-        const orderNsu = 'PED-' + pedidoId + '-T1-' + randomUUID();
+        const orderNsu = orderNsuPrefix + '-' + pedidoId + '-T1-' + randomUUID();
         const customer = {};
         if (typeof order.nome_cliente === 'string' && order.nome_cliente.trim()) customer.name = order.nome_cliente.trim();
         if (typeof order.telefone_cliente === 'string' && /^\+[1-9]\d{7,14}$/.test(order.telefone_cliente)) customer.phone_number = order.telefone_cliente;

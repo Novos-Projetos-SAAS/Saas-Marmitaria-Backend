@@ -395,6 +395,40 @@ describe('internal checkout reservation', { concurrency: false }, () => {
         assert.equal(await db('outbox_eventos').count('* as n').first().then(row => Number(row.n)), 0);
     });
 
+    test('H1 uses a server-configured test prefix and reserves the approved synthetic cent value once', async () => {
+        const order = await orderFixture({ valor_total: '1.00' });
+        await db('itens_pedido').where({ pedido_id: order.id }).update({ quantidade: 1, preco_unitario: '1.00', subtotal: '1.00' });
+        const input = { pedidoId: order.id, clientRequestId: randomUUID() };
+        let calls = 0, observed;
+        const service = await orchestrator({ async createCheckout({ payload }) { calls++; observed = payload; return { checkoutUrl }; } },
+            { orderNsuPrefix: 'H1-MARMITARIA' });
+        const first = await service.prepareCheckout(input);
+        const second = await service.prepareCheckout(input);
+        assert.match(first.orderNsu, new RegExp('^H1-MARMITARIA-' + order.id + '-T1-[a-f0-9-]{36}$'));
+        assert.equal(second.orderNsu, first.orderNsu);
+        assert.equal(calls, 1);
+        assert.equal(observed.order_nsu, first.orderNsu);
+        assert.equal(observed.items.length, 1);
+        assert.equal(observed.items[0].price, 100);
+        assert.equal(observed.options.single_payment, true);
+        assert.equal(observed.options.require_delivery_address, false);
+        assert.equal(observed.options.assured_installments, 1);
+        assert.equal(observed.options.discounts, undefined);
+        const payment = await db('pagamentos').where({ pedido_id: order.id }).first();
+        assert.equal(payment.order_nsu, first.orderNsu);
+        assert.equal(payment.valor_centavos, '100');
+        assert.equal((await db('pedidos').where({ id: order.id }).first()).liberado_cozinha_em, null);
+    });
+    test('invalid server prefixes fail before reserving or dispatching any financial request', async () => {
+        let calls = 0;
+        const client = { async createCheckout() { calls++; return { checkoutUrl }; } };
+        const before = await db('pagamentos').select('*');
+        for (const orderNsuPrefix of ['', ' ', null, 'H1_TEST', 'H1\nTEST', 'A'.repeat(33), {}]) {
+            await assert.rejects(orchestrator(client, { orderNsuPrefix }), error => error.code === 'PREPARATION_BLOCKED' && error.statusCode === 503);
+        }
+        assert.equal(calls, 0);
+        assert.deepEqual(await db('pagamentos').select('*'), before);
+    });
     test('late failure cannot downgrade an independently advanced payment or release the kitchen', async () => {
         const order = await orderFixture();
         const service = await orchestrator({ async createCheckout() {
