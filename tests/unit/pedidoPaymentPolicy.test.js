@@ -8,8 +8,8 @@ const cartaoCredito = { id: 5849, nome: 'Débito renomeado', codigo: 'CARTAO_CRE
 
 for (const metodo of [pix, credito, cartaoCredito]) {
     test('public origin cannot bypass future online selection by claiming Presencial for ' + metodo.codigo, () => {
-        assert.throws(() => definirFluxoCriacao({ origem: 'PUBLICO', metodo, habilitado: true, configAtiva: true,
-            tipo_pedido: 'Presencial', fluxo_pagamento: 'POSTERIOR' }), error => error.statusCode === 503);
+        assert.equal(definirFluxoCriacao({ origem: 'PUBLICO', metodo, habilitado: true, configAtiva: true,
+            tipo_pedido: 'Presencial', fluxo_pagamento: 'POSTERIOR' }), 'INFINITEPAY');
         assert.equal(definirFluxoCriacao({ origem: 'ADMIN', metodo, habilitado: true, configAtiva: true,
             tipo_pedido: 'Remoto' }), 'POSTERIOR');
     });

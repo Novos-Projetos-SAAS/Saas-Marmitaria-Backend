@@ -706,3 +706,147 @@ test('operational status waits for the order lock and rechecks eligibility after
         if (responsePromise) await responsePromise;
     }
 });
+
+test('Phase 2D app mounts financial routes closed by default without exposing query secrets', async () => {
+    const response = await request('/pagamentos/consulta?ref=PRIVATE_QUERY_MUST_NOT_LEAK');
+    assert.equal(response.status, 503);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+    const error = await f.db('logs').where({ acao: 'SISTEMA.ERRO', endpoint: '/pagamentos' }).orderBy('id', 'desc').first();
+    assert.ok(error); assert.equal(JSON.stringify(error).includes('PRIVATE_QUERY_MUST_NOT_LEAK'), false);
+});
+
+async function withOperationalFixture(action, { uncertain = false, enabled = true } = {}) {
+    const app = (await import('../../src/app.js')).default;
+    const { createInfinitepayRuntime } = await import('../../src/infinitepayRuntime.js');
+    const { encryptApiKey } = await import('../../src/utils/infinitepayCredentials.js');
+    const previousKey = process.env.INFINITEPAY_ENCRYPTION_KEY;
+    const config = await f.db('config_infinitepay').where({ id: 1 }).first();
+    const sent = [], sockets = [], previousIo = global.io;
+    process.env.INFINITEPAY_ENCRYPTION_KEY = randomBytes(32).toString('base64');
+    const [credential] = await f.db('infinitepay_credenciais').insert({ handle: 'synthetic-2d-app', ...encryptApiKey('SYNTHETIC_2D_APP_KEY', 'synthetic-2d-app') }).returning('*');
+    await f.db('config_infinitepay').where({ id: 1 }).update({ handle: credential.handle, credencial_atual_id: credential.id });
+    global.io = { to: () => ({ emit: (...args) => sockets.push(args) }) };
+    const runtime = createInfinitepayRuntime({ db: f.db, creationEnabled: async () => enabled,
+        checkoutClient: { async createCheckout(input) {
+            sent.push(input);
+            const payment = await f.db('pagamentos').where({ order_nsu: input.payload.order_nsu }).first();
+            assert.ok(payment, 'order, items and attempt must commit before transport');
+            await f.db.transaction(async trx => { await trx('pedidos').where({ id: payment.pedido_id }).forUpdate().noWait().first(); });
+            if (uncertain) throw new Error('SYNTHETIC_2D_APP_KEY transport failure');
+            return { checkoutUrl: 'https://checkout.invalid.test/only-mocked', invoiceSlug: 'slug-' + payment.id };
+        } }, checkClient: { async checkPayment() { return { paid: false }; } }, parseEvent: raw => raw,
+        deliver: async () => {}, redirectUrl: 'https://backend.invalid.test/pagamentos/infinitepay/retorno',
+        webhookUrl: 'https://backend.invalid.test/pagamentos/infinitepay/webhook', successUrl: 'https://shop.invalid.test/pedido/sucesso' });
+    app.locals.infinitepayRuntime = runtime;
+    try { await action({ app, runtime, sent, sockets, credential }); }
+    finally {
+        delete app.locals.infinitepayRuntime; global.io = previousIo;
+        process.env.INFINITEPAY_ENCRYPTION_KEY = previousKey;
+        await f.db('config_infinitepay').where({ id: 1 }).update({ handle: config.handle, credencial_atual_id: config.credencial_atual_id });
+    }
+}
+
+test('online public creation atomically reserves server prices and capabilities; parallel UUID submissions cannot duplicate orders', async () => {
+    await withOperationalFixture(async ({ runtime, sent, sockets }) => {
+        const { randomUUID } = await import('node:crypto');
+        const client_request_id = randomUUID();
+        const ordersBefore = Number((await f.db('pedidos').count('* as n').first()).n);
+        const body = { ...legacyPayload, metodo_pagamento_id: 33, tipo_pedido: 'Presencial', client_request_id, valor_total: 0.01 };
+        const responses = await Promise.all(Array.from({ length: 6 }, () => request('/pedidos?access_token=QUERY_SENTINEL_2D', { method: 'POST', body })));
+        assert.deepEqual(responses.map(r => r.status).sort(), [201,409,409,409,409,409]);
+        const created = (await responses.find(r => r.status === 201).json()).data;
+        assert.equal(created.fluxo_pagamento, 'INFINITEPAY'); assert.equal(created.pagamento_status, 'AGUARDANDO');
+        assert.match(created.access_token, /^[A-Za-z0-9_-]{43}$/); assert.match(created.status_ref, /^[A-Za-z0-9_-]{43}$/);
+        assert.equal(sent.length, 1); assert.equal(sent[0].payload.items[0].price, 2000);
+        assert.equal(Number((await f.db('pedidos').count('* as n').first()).n) - ordersBefore, 1);
+        const order = await f.db('pedidos').where({ id: created.pedido_id }).first();
+        assert.equal(order.client_request_id, client_request_id); assert.equal(order.liberado_cozinha_em, null);
+        assert.equal(Number((await f.db('itens_pedido').where({ pedido_id: order.id }).count('* as n').first()).n), 1);
+        assert.equal(sockets.length, 0);
+        assert.equal((await request('/pedidos/' + order.id + '/status', { method: 'PATCH', body: { status: 'Em Preparo' } })).status, 409);
+        const resume = await fetch(base + '/pagamentos/retomar', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + created.access_token }, body: JSON.stringify({ client_request_id }) });
+        assert.equal(resume.status, 200); assert.equal(sent.length, 1);
+        const action = await f.db('logs').where({ acao: 'PEDIDO.CRIAR' }).orderBy('id', 'desc').first();
+        assert.equal(action.endpoint, '/pedidos/');
+        const serialized = JSON.stringify({ action, payload: sent[0].payload });
+        for (const secret of [created.access_token, created.status_ref, 'QUERY_SENTINEL_2D', 'SYNTHETIC_2D_APP_KEY']) assert.equal(serialized.includes(secret), false);
+        assert.equal((await runtime.status(order.id)).cozinha_liberada, false);
+    });
+});
+
+test('online creation rejects missing UUID and non-JSON without creating orders or attempts', async () => {
+    await withOperationalFixture(async ({ sent }) => {
+        const before = await f.db('pedidos').select('*');
+        for (const client_request_id of [undefined, null, '', '   ']) assert.equal((await request('/pedidos', { method: 'POST', body: { ...legacyPayload, metodo_pagamento_id: 33, client_request_id } })).status, 400);
+        assert.equal((await request('/pedidos', { method: 'POST', body: { ...legacyPayload, metodo_pagamento_id: 33 }, headers: { 'Content-Type': 'text/plain' } })).status, 415);
+        assert.deepEqual(await f.db('pedidos').select('*'), before); assert.equal(sent.length, 0);
+    });
+});
+
+test('failure during reservation rolls back order, items and access before any simulated provider call', async () => {
+    await withOperationalFixture(async ({ sent, credential }) => {
+        const { randomUUID } = await import('node:crypto');
+        const counts = async () => Promise.all(['pedidos', 'itens_pedido', 'pagamentos', 'pedido_acessos'].map(async table => Number((await f.db(table).count('* as n').first()).n)));
+        const before = await counts();
+        await f.db('config_infinitepay').where({ id: 1 }).update({ credencial_atual_id: null });
+        try { assert.equal((await request('/pedidos', { method: 'POST', body: { ...legacyPayload, metodo_pagamento_id: 33, client_request_id: randomUUID() } })).status, 503); }
+        finally { await f.db('config_infinitepay').where({ id: 1 }).update({ credencial_atual_id: credential.id }); }
+        assert.deepEqual(await counts(), before); assert.equal(sent.length, 0);
+    });
+});
+
+test('uncertain online creation preserves holder recovery and blocks kitchen, while cash, debit and admin keep legacy creation', async () => {
+    await withOperationalFixture(async ({ sent, sockets }) => {
+        const { randomUUID } = await import('node:crypto'); const client_request_id = randomUUID();
+        const response = await request('/pedidos', { method: 'POST', body: { ...legacyPayload, metodo_pagamento_id: 34, client_request_id } });
+        assert.equal(response.status, 201);
+        const online = (await response.json()).data; assert.equal(online.pagamento_status, 'INCERTA'); assert.equal(online.checkout_url, undefined);
+        assert.match(online.access_token, /^[A-Za-z0-9_-]{43}$/); assert.equal(sockets.length, 0);
+        for (const [path, methodId] of [['/pedidos',31], ['/pedidos',32], ['/pedidos/admin',33], ['/pedidos/admin',34]]) {
+            const legacy = await request(path, { method: 'POST', body: { ...legacyPayload, metodo_pagamento_id: methodId } });
+            assert.equal(legacy.status, 201); const data = (await legacy.json()).data;
+            assert.equal(data.access_token, undefined); assert.equal((await f.db('pedidos').where({ id: data.pedido_id }).first()).fluxo_pagamento, 'POSTERIOR');
+        }
+        assert.equal(sent.length, 1); assert.equal(sockets.length, 4);
+    }, { uncertain: true });
+});
+
+test('a changed creation gate is rechecked inside the order transaction and fails closed', async () => {
+    await withOperationalFixture(async ({ runtime, sent, sockets }) => {
+        const original = runtime.checkoutEnabled; let checks = 0;
+        runtime.checkoutEnabled = async trx => ++checks === 1 ? original(trx) : false;
+        const { randomUUID } = await import('node:crypto'); const client_request_id = randomUUID();
+        const response = await request('/pedidos', { method: 'POST', body: { ...legacyPayload, metodo_pagamento_id: 33, client_request_id } });
+        assert.equal(response.status, 503); assert.ok(checks >= 2);
+        assert.equal(await f.db('pedidos').where({ client_request_id }).first(), undefined);
+        assert.equal(sent.length, 0); assert.equal(sockets.length, 0);
+    });
+});
+
+test('cash and debit remain posterior if checkout is disabled during their creation', async () => {
+    await withOperationalFixture(async ({ runtime, sent, sockets }) => {
+        for (const methodId of [31, 32]) {
+            let checks = 0; runtime.checkoutEnabled = async () => ++checks === 1;
+            const response = await request('/pedidos', { method: 'POST', body: { ...legacyPayload, metodo_pagamento_id: methodId } });
+            assert.equal(response.status, 201);
+            const created = (await response.json()).data;
+            assert.equal((await f.db('pedidos').where({ id: created.pedido_id }).first()).fluxo_pagamento, 'POSTERIOR');
+        }
+        assert.equal(sent.length, 0); assert.equal(sockets.length, 2);
+    });
+});
+
+test('a reserved online UUID cannot fall back to a new posterior order after disabling or removing the runtime', async () => {
+    await withOperationalFixture(async ({ runtime, app, sent, sockets }) => {
+        const { randomUUID } = await import('node:crypto'); const client_request_id = randomUUID();
+        const payload = { ...legacyPayload, metodo_pagamento_id: 33, client_request_id };
+        assert.equal((await request('/pedidos', { method: 'POST', body: payload })).status, 201);
+        const orders = await f.db('pedidos').select('*'), items = await f.db('itens_pedido').select('*');
+        runtime.checkoutEnabled = async () => false;
+        for (const methodId of [33, 31, 32]) assert.equal((await request('/pedidos', { method: 'POST', body: { ...payload, metodo_pagamento_id: methodId } })).status, 409);
+        delete app.locals.infinitepayRuntime;
+        assert.equal((await request('/pedidos', { method: 'POST', body: payload })).status, 409);
+        assert.deepEqual(await f.db('pedidos').select('*'), orders); assert.deepEqual(await f.db('itens_pedido').select('*'), items);
+        assert.equal(sent.length, 1); assert.equal(sockets.length, 0);
+    });
+});

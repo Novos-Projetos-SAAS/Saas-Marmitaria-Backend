@@ -24,8 +24,7 @@ export function definirFluxoCriacao({ origem, metodo, habilitado, configAtiva })
     if (!['PUBLICO', 'ADMIN'].includes(origem)) lancarErro('Origem de pedido inválida.', 400);
     const metodoOnline = metodoPermiteInfinitepay(metodo);
     if (origem === 'PUBLICO' && habilitado === true && configAtiva === true && metodoOnline) {
-        // A seleção futura já é confiável, mas esta etapa não cria checkout nem pedido online incompleto.
-        lancarErro('Checkout online indisponível nesta etapa.', 503);
+        return 'INFINITEPAY';
     }
     return 'POSTERIOR';
 }

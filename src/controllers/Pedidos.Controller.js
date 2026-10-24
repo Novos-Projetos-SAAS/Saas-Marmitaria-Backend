@@ -1,8 +1,10 @@
 import connection from "../database/connection.js";
 import { lancarErro } from "../utils/errorUtils.js";
+import { safeRequestLog } from '../utils/safeRequestLog.js';
+import { lockFinancialRequest } from '../infinitepayRuntime.js';
 import {
     aplicarElegibilidadeOperacional, definirFluxoCriacao, exigirElegibilidadeOperacional,
-    exigirMutacaoSemCobranca, rejeitarControleFinanceiro
+    exigirMutacaoSemCobranca, metodoPermiteInfinitepay, rejeitarControleFinanceiro
 } from '../utils/pedidoPaymentPolicy.js';
 import {
     buscarPedidoCompletoPorId,
@@ -22,6 +24,10 @@ export const criarPedido = async (req, res, next) => {
     let trx;
 
     try {
+        const financialRuntime = req.app.locals.infinitepayRuntime;
+        const runtimeEnabled = res.locals.origemPedido === 'PUBLICO' && financialRuntime
+            ? await financialRuntime.checkoutEnabled(connection) : false;
+        if (runtimeEnabled && !req.is('application/json')) lancarErro('Envie JSON.', 415);
         rejeitarControleFinanceiro(req.body);
         let {
             nome_cliente,
@@ -89,11 +95,21 @@ export const criarPedido = async (req, res, next) => {
         // Revalida as regras críticas no momento exato da criação do pedido.
         await validarLojaAberta(trx);
         const metodo = await validarMetodoPagamento(metodo_pagamento_id, trx);
-        const habilitado = process.env.INFINITEPAY_CHECKOUT_ENABLED === 'true';
-        const config = habilitado && res.locals.origemPedido === 'PUBLICO'
+        const runtimeEnabledInTransaction = res.locals.origemPedido === 'PUBLICO' && financialRuntime
+            ? await financialRuntime.checkoutEnabled(trx) : false;
+        if (runtimeEnabled && !runtimeEnabledInTransaction && metodoPermiteInfinitepay(metodo)) lancarErro('Checkout indisponível.', 503);
+        const habilitado = financialRuntime ? runtimeEnabledInTransaction : process.env.INFINITEPAY_CHECKOUT_ENABLED === 'true';
+        const config = runtimeEnabledInTransaction ? { ativo: true } : habilitado && res.locals.origemPedido === 'PUBLICO'
             ? await trx('config_infinitepay').where({ id: 1 }).first('ativo') : null;
         const fluxoPagamento = definirFluxoCriacao({ origem: res.locals.origemPedido, metodo,
             habilitado, configAtiva: config?.ativo === true });
+        let requestId = res.locals.origemPedido === 'PUBLICO' && Object.hasOwn(req.body, 'client_request_id')
+            ? await lockFinancialRequest(trx, req.body.client_request_id) : undefined;
+        if (fluxoPagamento === 'INFINITEPAY') {
+            if (!financialRuntime) lancarErro('Checkout indisponível.', 503);
+            res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+            if (!requestId) requestId = await lockFinancialRequest(trx, req.body.client_request_id);
+        }
 
         const [pedido] = await connection("pedidos")
             .transacting(trx)
@@ -141,7 +157,7 @@ export const criarPedido = async (req, res, next) => {
                 tipo: "ACAO",
                 usuario_id: req.usuario?.id || null,
                 metodo: req.method,
-                endpoint: req.originalUrl,
+                endpoint: safeRequestLog(req).route,
                 acao: "PEDIDO.CRIAR",
                 descricao: `Pedido #${pedido.id} para ${nome_cliente}. Total: R$ ${valorTotalPedido.toFixed(2)}`,
                 payload: JSON.stringify({
@@ -156,7 +172,17 @@ export const criarPedido = async (req, res, next) => {
                 })
             });
 
+        const reservation = fluxoPagamento === 'INFINITEPAY'
+            ? await financialRuntime.reserveCreation(trx, pedido.id, requestId) : null;
+        const access = reservation ? await financialRuntime.issueAccess(trx, pedido.id) : null;
         await trx.commit();
+
+        if (reservation) {
+            const checkout = await financialRuntime.finishCreation(reservation);
+            return res.status(201).json({ status: 'success', data: {
+                pedido_id: pedido.id, total: valorTotalPedido, ...checkout, ...access
+            } });
+        }
 
         // O pedido já está confirmado no banco. A falha do Socket não pode invalidar a criação nem induzir o cliente a reenviar o pedido.
         try {

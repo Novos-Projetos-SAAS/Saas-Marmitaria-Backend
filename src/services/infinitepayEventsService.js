@@ -71,11 +71,11 @@ export function createInfinitepayEventsService({ db, client, parseEvent, receipt
         if (!(value instanceof Date) || !Number.isFinite(value.getTime())) refuse('INVALID_CLOCK');
         return value;
     }
-    async function receive(raw) {
+    async function receive(raw, parser = parseEvent) {
         let filtered, key;
         try {
             const canonical = canonicalEvent(raw);
-            const parsed = await parseEvent(JSON.parse(canonical));
+            const parsed = await parser(JSON.parse(canonical));
             if (!parsed || !eventTypes.has(parsed.type)) refuse('INVALID_EVENT', 400);
             const invoiceSlug = identifier(parsed.invoiceSlug, 255, true);
             const slug = identifier(parsed.slug, 255, true);
@@ -221,7 +221,11 @@ export function createInfinitepayEventsService({ db, client, parseEvent, receipt
             return saved ? dto(saved) : null;
         });
     }
-    return { receive, async processNext() {
+    return { receive: raw => receive(raw),
+        // A correlated return requests verification; it never supplies a payment proof.
+        receiveReturn: input => receive({ source: 'RETURN',
+            ...Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) }, raw => ({ type: 'created', ...raw })),
+        async processNext() {
         let event;
         try { event = await claim(); } catch { refuse('EVENT_CLAIM_FAILED'); }
         if (!event) return null;

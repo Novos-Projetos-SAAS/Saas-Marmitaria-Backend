@@ -81,7 +81,7 @@ describe('approved real payment identity map on synthetic PostgreSQL data', { co
             }
             assert.equal(definirFluxoCriacao({ origem: 'ADMIN', metodo, habilitado: true, configAtiva: true }), 'POSTERIOR');
             if (['PIX', 'CREDITO'].includes(metodo.tipo_financeiro)) {
-                assert.throws(() => definirFluxoCriacao({ origem: 'PUBLICO', metodo, habilitado: true, configAtiva: true }), error => error.statusCode === 503);
+                assert.equal(definirFluxoCriacao({ origem: 'PUBLICO', metodo, habilitado: true, configAtiva: true }), 'INFINITEPAY');
             } else {
                 assert.equal(definirFluxoCriacao({ origem: 'PUBLICO', metodo, habilitado: true, configAtiva: true }), 'POSTERIOR');
             }
