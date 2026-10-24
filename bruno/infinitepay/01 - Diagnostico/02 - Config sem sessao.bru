@@ -1,0 +1,24 @@
+meta {
+  name: 02 - Config sem sessao (401)
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/configuracoes/infinitepay
+  body: none
+  auth: none
+}
+
+headers {
+  Cookie: token=sessao-invalida-bruno
+}
+
+tests {
+  test("HTTP 401", function () {
+    expect(res.getStatus()).to.equal(401);
+  });
+  test("Acesso sem autenticação negado", function () {
+    expect(res.getBody().status).to.equal("fail");
+  });
+}

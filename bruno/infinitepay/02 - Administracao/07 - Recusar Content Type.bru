@@ -1,0 +1,28 @@
+meta {
+  name: 07 - Recusar Content-Type (415)
+  type: http
+  seq: 7
+}
+
+put {
+  url: {{baseUrl}}/configuracoes/infinitepay
+  body: text
+  auth: none
+}
+
+headers {
+  Cookie: {{sessionCookie}}
+  Content-Type: text/plain
+  Origin: {{allowedOrigin}}
+  X-Infinitepay-CSRF: {{csrfToken}}
+}
+
+body:text {
+  {"ativo":false}
+}
+
+tests {
+  test("HTTP 415", function () {
+    expect(res.getStatus()).to.equal(415);
+  });
+}

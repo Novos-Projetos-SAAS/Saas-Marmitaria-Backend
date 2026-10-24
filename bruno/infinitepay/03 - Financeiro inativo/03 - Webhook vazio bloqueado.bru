@@ -1,0 +1,25 @@
+meta {
+  name: 03 - Webhook vazio sem runtime (503)
+  type: http
+  seq: 3
+}
+
+post {
+  url: {{baseUrl}}/pagamentos/infinitepay/webhook
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {}
+}
+
+tests {
+  test("HTTP 503", function () {
+    expect(res.getStatus()).to.equal(503);
+  });
+}

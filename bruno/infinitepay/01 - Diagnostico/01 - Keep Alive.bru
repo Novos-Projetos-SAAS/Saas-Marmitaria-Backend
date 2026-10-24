@@ -1,0 +1,20 @@
+meta {
+  name: 01 - Keep Alive (200)
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/keep-alive
+  body: none
+  auth: none
+}
+
+tests {
+  test("HTTP 200", function () {
+    expect(res.getStatus()).to.equal(200);
+  });
+  test("API online com timestamp", function () {
+    const b = res.getBody(); expect(b.status).to.equal("online"); expect(b.timestamp).to.be.a("string");
+  });
+}

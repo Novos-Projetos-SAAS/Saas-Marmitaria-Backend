@@ -1,0 +1,27 @@
+meta {
+  name: 02 - Retomar sem runtime (503)
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/pagamentos/retomar
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "client_request_id": "00000000-0000-4000-8000-000000000001"
+  }
+}
+
+tests {
+  test("HTTP 503", function () {
+    expect(res.getStatus()).to.equal(503);
+  });
+}

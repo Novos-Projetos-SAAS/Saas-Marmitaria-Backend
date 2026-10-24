@@ -1,0 +1,20 @@
+meta {
+  name: 01 - Consulta sem runtime (503)
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/pagamentos/consulta?ref=bruno-invalido
+  body: none
+  auth: none
+}
+
+tests {
+  test("HTTP 503", function () {
+    expect(res.getStatus()).to.equal(503);
+  });
+  test("Resposta financeira não permite cache", function () {
+    expect(String(res.getHeader("cache-control"))).to.include("no-store");
+  });
+}

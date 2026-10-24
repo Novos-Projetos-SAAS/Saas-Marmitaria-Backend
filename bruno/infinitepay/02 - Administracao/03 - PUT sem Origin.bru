@@ -1,0 +1,29 @@
+meta {
+  name: 03 - PUT sem Origin (403)
+  type: http
+  seq: 3
+}
+
+put {
+  url: {{baseUrl}}/configuracoes/infinitepay
+  body: json
+  auth: none
+}
+
+headers {
+  Cookie: {{sessionCookie}}
+  Content-Type: application/json
+  X-Infinitepay-CSRF: {{csrfToken}}
+}
+
+body:json {
+  {
+    "ativo": false
+  }
+}
+
+tests {
+  test("HTTP 403", function () {
+    expect(res.getStatus()).to.equal(403);
+  });
+}
