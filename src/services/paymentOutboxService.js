@@ -7,7 +7,7 @@ export function createPaymentOutboxService({ db, deliver, now = () => new Date()
         throw new TypeError('Lease, intervalo e limite de tentativas devem ser inteiros positivos.');
     }
 
-    async function claim() {
+    async function claim(eventId) {
         const time = now();
         return db.transaction(async trx => {
             // Este lock nunca é seguido por locks de pedido/pagamento: o verificador usa a ordem inversa.
@@ -23,6 +23,7 @@ export function createPaymentOutboxService({ db, deliver, now = () => new Date()
                         this.where({ status: 'PROCESSANDO' }).where('locked_until', '<=', time);
                     });
                 })
+                .modify(query => { if (eventId !== undefined) query.where({ id: eventId }); })
                 .orderBy('criado_em').orderBy('id').forUpdate().skipLocked().first();
             if (!row) return null;
             if (row.tentativas >= maxAttempts) {
@@ -48,8 +49,8 @@ export function createPaymentOutboxService({ db, deliver, now = () => new Date()
             proxima_tentativa_em: row.tentativas < maxAttempts ? new Date(now().getTime() + delay) : null });
     }
 
-    async function processOne() {
-        const row = await claim();
+    async function processOne(eventId) {
+        const row = await claim(eventId);
         if (!row) return null;
         const eligible = await aplicarElegibilidadeOperacional(db('pedidos'))
             .where('pedidos.id', row.pedido_id).where('pedidos.fluxo_pagamento', 'INFINITEPAY').first('pedidos.id');
@@ -71,12 +72,15 @@ export function createPaymentOutboxService({ db, deliver, now = () => new Date()
         return acknowledged ? dto : null;
     }
 
-    async function processNext() {
-        try { return await processOne(); }
+    async function processNext(eventId) {
+        try { return await processOne(eventId); }
         catch {
             throw Object.assign(new Error('Não foi possível processar a entrega financeira.'), { code: 'OUTBOX_PROCESSING_FAILED' });
         }
     }
 
-    return { processNext };
+    return { processNext: () => processNext(), processEvent: eventId => {
+        if (!/^[1-9]\d*$/.test(String(eventId))) throw new TypeError('Evento de saída inválido.');
+        return processNext(eventId);
+    } };
 }

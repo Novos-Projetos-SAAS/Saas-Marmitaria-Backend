@@ -30,7 +30,7 @@ function receipt(value) {
     return value;
 }
 
-async function context(db, captureKey, lock = false) {
+async function context(db, captureKey, lock = false, allowReconciled = false) {
     const marker = await db('pagamentos_eventos').where({ event_key: 'h1:links:command-reservation' }).first();
     if (!marker?.pagamento_id || !await db('pagamentos_eventos').where({ event_key: 'h1:links:dispatch-budget' }).first('id')) refuse();
     const query = db('pagamentos').where({ id: marker.pagamento_id });
@@ -39,8 +39,9 @@ async function context(db, captureKey, lock = false) {
     const orderQuery = db('pedidos').where({ id: payment.pedido_id });
     const order = await (lock ? orderQuery.forUpdate() : orderQuery).first();
     const config = await db('config_infinitepay').where({ id: 1 }).first();
-    if (payment.status !== 'INCERTA' || payment.bloqueia_nova_cobranca !== true || String(payment.valor_centavos) !== '100' ||
-        order?.fluxo_pagamento !== 'INFINITEPAY' || order.valor_total !== '1.00' || order.liberado_cozinha_em !== null ||
+    const reconciled = allowReconciled && payment.status === 'PAGA';
+    if ((!reconciled && payment.status !== 'INCERTA') || payment.bloqueia_nova_cobranca !== true || String(payment.valor_centavos) !== '100' ||
+        order?.fluxo_pagamento !== 'INFINITEPAY' || order.valor_total !== '1.00' || (!reconciled && order.liberado_cozinha_em !== null) ||
         config?.ativo !== false || config.handle !== 'matheuszxp' || payment.handle_snapshot !== 'matheuszxp') refuse();
     const items = await db('itens_pedido').where({ pedido_id: order.id });
     if (items.length !== 1 || items[0].quantidade !== 1 || items[0].preco_unitario !== '1.00' || items[0].subtotal !== '1.00') refuse();
@@ -70,15 +71,18 @@ async function context(db, captureKey, lock = false) {
     const credential = await db('infinitepay_credenciais').where({ id: payment.credencial_id, handle: payment.handle_snapshot }).first();
     if (!credential) refuse();
     const outbox = Number((await db('outbox_eventos').count('* as n').first()).n);
-    if (outbox !== 0 || Number((await db('pedidos').whereNotNull('liberado_cozinha_em').count('* as n').first()).n) !== 0) refuse();
-    return { payment, paid, credential, request: { handle: payment.handle_snapshot, order_nsu: payment.order_nsu,
+    const otherOutbox = db('outbox_eventos');
+    const otherReleased = db('pedidos').whereNotNull('liberado_cozinha_em');
+    if (reconciled) { otherOutbox.whereNot({ pedido_id: payment.pedido_id }); otherReleased.whereNot({ id: payment.pedido_id }); }
+    if (Number((await otherOutbox.count('* as n').first()).n) !== 0 || Number((await otherReleased.count('* as n').first()).n) !== 0) refuse();
+    return { payment, order, paid, credential, request: { handle: payment.handle_snapshot, order_nsu: payment.order_nsu,
         transaction_nsu: paid.transaction_nsu, slug: paid.invoice_slug },
         evidenceHash: digest(JSON.stringify([originalBody, link.body, ...observed.map((row, i) => [rows[i].id, row.body])])),
-        summary: { ready: true, read_only: true, identifiers_consistent: true, return_nonce_matches: true,
+        summary: { ready: !reconciled, read_only: true, identifiers_consistent: true, return_nonce_matches: true,
             receipt_consistent_between_events: true, observed_events: ['created', 'settled', 'paid', 'RETURN'],
             amount_expected_centavos: 100, observed_paid_amount_centavos: paid.paid_amount,
             observed_capture_method: paid.capture_method, observed_installments: paid.installments,
-            attempt_status: payment.status, financial_confirmation: false, kitchen_released: false, outbox } };
+            attempt_status: payment.status, financial_confirmation: false, kitchen_released: Boolean(order.liberado_cozinha_em), outbox } };
 }
 
 export async function inspectH2Check({ db, captureKey }) {
@@ -107,23 +111,32 @@ function parseCheck(data, ctx) {
 export async function readH2CheckResult({ db, captureKey }) {
     return db.transaction(async trx => {
         await trx.raw('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-        const ctx = await context(trx, captureKey);
-        const marker = await trx('pagamentos_eventos').where({ event_key: reservationKey }).first();
-        const capture = await trx('pagamentos_eventos').where({ event_key: responseKey }).first();
+        return (await loadH2CheckEvidence({ db: trx, captureKey, allowReconciled: true })).result;
+    });
+}
+
+// Private fields stay inside the backend; callers expose only result, never the evidence bundle.
+export async function loadH2CheckEvidence({ db, captureKey, allowReconciled = false }) {
+        const ctx = await context(db, captureKey, false, allowReconciled);
+        const marker = await db('pagamentos_eventos').where({ event_key: reservationKey }).first();
+        const capture = await db('pagamentos_eventos').where({ event_key: responseKey }).first();
+        let proof = null;
+        const bundle = result => ({ context: ctx, marker, capture, proof, result });
         const result = { reserved: Boolean(marker), response_received: Boolean(capture), observation_only: true,
             payment_confirmed: false, attempt_status: ctx.payment.status, amount_expected_centavos: 100,
             identifiers_consistent: true, receipt_consistent_between_events: true,
-            operational_transition_applied: false, kitchen_released: false, outbox: 0, automatic_retry: false };
-        if (!capture) return { ...result, block_reason: 'H2_RESPONSE_NOT_CAPTURED' };
+            operational_transition_applied: ctx.payment.status === 'PAGA', kitchen_released: Boolean(ctx.order.liberado_cozinha_em),
+            outbox: ctx.summary.outbox, automatic_retry: false };
+        if (!capture) return bundle({ ...result, block_reason: 'H2_RESPONSE_NOT_CAPTURED' });
         const request = marker && decryptH1Observation(marker.payload_filtrado, captureKey);
         const observed = decryptH1Observation(capture.payload_filtrado, captureKey);
         if (marker?.pagamento_id !== ctx.payment.id || capture.pagamento_id !== ctx.payment.id ||
             JSON.stringify(request.request) !== JSON.stringify(ctx.request) || request.evidence_sha256 !== ctx.evidenceHash ||
             observed.request_sha256 !== digest(JSON.stringify(ctx.request))) refuse('H2_RESPONSE_BINDING_MISMATCH');
         result.http_status = observed.status;
-        if (observed.status !== 200) return { ...result, block_reason: 'H2_HTTP_NOT_OK' };
+        if (observed.status !== 200) return bundle({ ...result, block_reason: 'H2_HTTP_NOT_OK' });
         let data;
-        try { data = JSON.parse(observed.body); } catch { return { ...result, block_reason: 'H2_RESPONSE_NOT_JSON' }; }
+        try { data = JSON.parse(observed.body); } catch { return bundle({ ...result, block_reason: 'H2_RESPONSE_NOT_JSON' }); }
         const apiKey = decryptApiKey(ctx.credential, ctx.payment.handle_snapshot);
         result.response_fields = data && typeof data === 'object' && !Array.isArray(data) ? Object.keys(data).map(name =>
             /^[a-zA-Z_][a-zA-Z0-9_]{0,79}$/.test(name) && !/api.?key|password|secret|token|authorization/i.test(name) &&
@@ -131,7 +144,7 @@ export async function readH2CheckResult({ db, captureKey }) {
         if (typeof data?.success === 'boolean') result.success = data.success;
         if (typeof data?.paid === 'boolean') result.paid = data.paid;
         try {
-            const proof = normalizedPayment(parseCheck(data, ctx), { orderNsu: ctx.request.order_nsu,
+            proof = normalizedPayment(parseCheck(data, ctx), { orderNsu: ctx.request.order_nsu,
                 transactionNsu: ctx.request.transaction_nsu, invoiceSlug: ctx.request.slug }, new Set([receiptOrigin]));
             Object.assign(result, { amount_centavos: proof.amount, paid_amount_centavos: proof.paidAmount,
                 installments: proof.installments, capture_method: proof.captureMethod,
@@ -143,8 +156,7 @@ export async function readH2CheckResult({ db, captureKey }) {
             if (proof.captureMethod !== ctx.paid.capture_method) refuse('H2_METHOD_MISMATCH');
             result.payment_confirmed = true;
         } catch (error) { result.block_reason = /^H2_[A-Z_]+$/.test(error.code || '') ? error.code : 'H2_RESPONSE_CONTRACT_INVALID'; }
-        return result;
-    });
+        return bundle(result);
 }
 
 export async function executeH2Check({ db, captureKey, apiKey, transport, timeoutMs = 5000 }) {

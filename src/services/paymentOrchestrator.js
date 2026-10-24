@@ -32,7 +32,7 @@ function safeUrl(value) {
         return url;
     } catch { refuse('INVALID_CHECKOUT_URL', 400); }
 }
-function snapshot(order, items, composition, method) {
+export function snapshot(order, items, composition, method) {
     if (!items.length) refuse('INVALID_ORDER_AMOUNT');
     let total = 0;
     for (const item of items) {

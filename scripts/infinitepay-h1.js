@@ -6,30 +6,50 @@ import { validateH1Settings, assertH1Database, createH1App, listenH1 } from '../
 import { verifyH1Endpoints, confirmH1Link, executeH1SingleLink, readH1LinkResult, readH1ExistingCheckout, showH1Checkout, readH1Events } from '../src/homologation/infinitepayH1SingleLink.js';
 import { createH1ProxyVerifier } from '../src/homologation/infinitepayH1Proxy.js';
 import { inspectH2Check, executeH2Check, readH2CheckResult } from '../src/homologation/infinitepayH2Check.js';
+import { previewH3, confirmH3, reconcileH3, readH3Status, deliverH3 } from '../src/homologation/infinitepayH3.js';
 
 const action = process.argv[2];
 let db, server;
 async function main() {
     if (!['serve', 'status', 'verify', 'create-link', 'result', 'validate-link', 'checkout-url', 'events',
-        'check-evidence', 'check-payment', 'check-result'].includes(action) || !process.env.H1_SETTINGS_FILE) throw new Error();
+        'check-evidence', 'check-payment', 'check-result', 'h3-preview', 'h3-reconcile', 'h3-status', 'h3-deliver'].includes(action) || !process.env.H1_SETTINGS_FILE) throw new Error();
     const settings = JSON.parse((await readFile(process.env.H1_SETTINGS_FILE, 'utf8')).replace(/^\uFEFF/, ''));
     validateH1Settings(settings);
     if (!process.env.H1_DB_PASSWORD || !/^[A-Za-z0-9+/]{43}=$/.test(process.env.H1_OBSERVATION_KEY || '')) throw new Error();
     const captureKey = Buffer.from(process.env.H1_OBSERVATION_KEY, 'base64');
     const apiKey = process.env.H1_API_KEY;
-    if (['create-link', 'result', 'validate-link', 'checkout-url', 'events', 'check-evidence', 'check-payment', 'check-result'].includes(action)) {
+    if (['create-link', 'result', 'validate-link', 'checkout-url', 'events', 'check-evidence', 'check-payment', 'check-result',
+        'h3-preview', 'h3-reconcile', 'h3-status', 'h3-deliver'].includes(action)) {
         process.env.INFINITEPAY_ENCRYPTION_KEYS = JSON.stringify({ 1: captureKey.toString('base64') });
         process.env.INFINITEPAY_ENCRYPTION_KEY_VERSION = '1';
     }
     db = knex({ client: 'pg', connection: { host: settings.host, port: settings.port, database: settings.database,
         user: settings.user, password: process.env.H1_DB_PASSWORD, ssl: false, application_name: 'infinitepay-h1-local',
-        ...(['validate-link', 'checkout-url', 'events', 'check-evidence', 'check-result'].includes(action) ? { options: '-c default_transaction_read_only=on' } : {}) },
+        ...(['validate-link', 'checkout-url', 'events', 'check-evidence', 'check-result', 'h3-preview', 'h3-status'].includes(action) ? { options: '-c default_transaction_read_only=on' } : {}) },
         pool: { min: 0, max: 4 }, acquireConnectionTimeout: 5000 });
     delete process.env.H1_DB_PASSWORD; delete process.env.H1_OBSERVATION_KEY; delete process.env.H1_API_KEY;
     const identity = await assertH1Database(db);
     const expected = (await readdir(new URL('../src/database/migrations/', import.meta.url))).filter(name => name.endsWith('.js')).sort();
     const applied = (await db('knex_migrations').select('name')).map(row => row.name).sort();
     assert.deepEqual(applied, expected);
+    if (action.startsWith('h3-')) {
+        if (settings.handle !== 'matheuszxp') throw new Error();
+        const options = { db, captureKey, apiKey, receiptTransport: globalThis.fetch };
+        if (action === 'h3-status') console.info(JSON.stringify(await readH3Status(options), null, 2));
+        else if (action === 'h3-deliver') console.info(JSON.stringify(await deliverH3(options), null, 2));
+        else {
+            if (action === 'h3-reconcile' && (process.stdin.isTTY !== true || process.stdout.isTTY !== true)) throw new Error();
+            const preview = await previewH3(options);
+            console.info(JSON.stringify(preview.summary, null, 2));
+            if (action === 'h3-reconcile' && preview.summary.ready) {
+                if (await confirmH3()) {
+                    await assertH1Database(db);
+                    console.info(JSON.stringify(await reconcileH3({ ...options, expectedFingerprint: preview.fingerprint }), null, 2));
+                } else console.info(JSON.stringify({ status: 'H3_CANCELLED', financial_updates: false }));
+            }
+        }
+        return;
+    }
     if (action === 'status') {
         console.info(JSON.stringify({ database: identity, migrations: applied.length, checkout_enabled: false,
             events: await db('pagamentos_eventos').select('tipo_evento', 'status_processamento').count('* as total').groupBy('tipo_evento', 'status_processamento'),
@@ -106,8 +126,10 @@ async function main() {
 try {
     const result = await main();
     if (result !== 'serving' && db) await db.destroy();
-} catch {
-    console.error(JSON.stringify({ status: 'H1_BLOCKED', message: 'Operação H1 bloqueada ou interrompida. Consulte Result; não repita um envio financeiro.' }));
+} catch (error) {
+    const h3 = action?.startsWith('h3-');
+    console.error(JSON.stringify({ status: h3 && /^H3_[A-Z_]+$/.test(error.code || '') ? error.code : h3 ? 'H3_BLOCKED' : 'H1_BLOCKED',
+        message: h3 ? 'H3 bloqueada. Consulte H3Status; não repita APIs financeiras.' : 'Operação H1 bloqueada ou interrompida. Consulte Result; não repita um envio financeiro.' }));
     if (server?.listening) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
     if (db) await db.destroy();
     process.exitCode = 1;

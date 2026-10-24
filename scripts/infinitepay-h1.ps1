@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Postgres', 'Backend', 'Tunnel', 'Verify', 'Status', 'Credential', 'Stop', 'CreateLink', 'Result', 'ValidateLink', 'ViewCheckout', 'Events', 'CheckEvidence', 'CheckPayment', 'CheckResult')]
+    [ValidateSet('Postgres', 'Backend', 'Tunnel', 'Verify', 'Status', 'Credential', 'Stop', 'CreateLink', 'Result', 'ValidateLink', 'ViewCheckout', 'Events', 'CheckEvidence', 'CheckPayment', 'CheckResult', 'H3Preview', 'H3Reconcile', 'H3Status', 'H3Deliver')]
     [string]$Action
 )
 $ErrorActionPreference = 'Stop'
@@ -117,7 +117,8 @@ switch ($Action) {
 }
 $nodeAction = @{ Backend = 'serve'; Verify = 'verify'; Status = 'status'; CreateLink = 'create-link'; Result = 'result';
     ValidateLink = 'validate-link'; ViewCheckout = 'checkout-url'; Events = 'events';
-    CheckEvidence = 'check-evidence'; CheckPayment = 'check-payment'; CheckResult = 'check-result' }[$Action]
+    CheckEvidence = 'check-evidence'; CheckPayment = 'check-payment'; CheckResult = 'check-result';
+    H3Preview = 'h3-preview'; H3Reconcile = 'h3-reconcile'; H3Status = 'h3-status'; H3Deliver = 'h3-deliver' }[$Action]
 if ($Action -eq 'Backend' -and (Get-ManagedProcess 'backend_pid' (Get-Command node.exe).Source)) { throw 'O backend H1 já está em execução.' }
 $variables = @('NODE_ENV', 'INFINITEPAY_CHECKOUT_ENABLED', 'DATABASE_URL', 'PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'TEST_DATABASE_URL',
     'H1_SETTINGS_FILE', 'H1_DB_PASSWORD', 'H1_OBSERVATION_KEY', 'H1_API_KEY', 'INFINITEPAY_ENCRYPTION_KEY', 'INFINITEPAY_ENCRYPTION_KEYS',
@@ -130,7 +131,7 @@ try {
     $env:H1_SETTINGS_FILE = $statePath
     $env:H1_DB_PASSWORD = [Net.NetworkCredential]::new('', (ConvertTo-SecureString $settings.db_password_dpapi)).Password
     $env:H1_OBSERVATION_KEY = [Net.NetworkCredential]::new('', (ConvertTo-SecureString $settings.encryption_key_dpapi)).Password
-    if ($Action -in @('CreateLink', 'CheckPayment')) {
+    if ($Action -in @('CreateLink', 'CheckPayment', 'H3Preview', 'H3Reconcile')) {
         $credentialPath = Join-Path $privateDirectory 'api-key.dpapi'
         if (-not (Test-Path -LiteralPath $credentialPath)) {
             throw 'API Key local protegida ausente. Configure-a com -Action Credential.'

@@ -95,7 +95,7 @@ export function createInfinitepayEventsService({ db, client, parseEvent, receipt
             return dto(saved || await db('pagamentos_eventos').where({ event_key: key }).first());
         } catch { refuse('EVENT_STORAGE_FAILED'); }
     }
-    async function claim() {
+    async function claim(eventId) {
         const instant = time();
         return db.transaction(async trx => {
             const row = await trx('pagamentos_eventos').where(function () {
@@ -109,7 +109,8 @@ export function createInfinitepayEventsService({ db, client, parseEvent, receipt
                         this.whereNull('locked_until').orWhere('locked_until', '<=', instant);
                     });
                 });
-            }).orderBy('recebido_em').orderBy('id').forUpdate().skipLocked().first();
+            }).modify(query => { if (eventId !== undefined) query.where({ id: eventId }); })
+                .orderBy('recebido_em').orderBy('id').forUpdate().skipLocked().first();
             if (!row) return null;
             if (row.tentativas >= maxAttempts) {
                 const [exhausted] = await trx('pagamentos_eventos').where({ id: row.id }).update({ status_processamento: 'ERRO',
@@ -221,17 +222,22 @@ export function createInfinitepayEventsService({ db, client, parseEvent, receipt
             return saved ? dto(saved) : null;
         });
     }
-    return { receive: raw => receive(raw),
-        // A correlated return requests verification; it never supplies a payment proof.
-        receiveReturn: input => receive({ source: 'RETURN',
-            ...Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) }, raw => ({ type: 'created', ...raw })),
-        async processNext() {
+    async function process(eventId) {
         let event;
-        try { event = await claim(); } catch { refuse('EVENT_CLAIM_FAILED'); }
+        try { event = await claim(eventId); } catch { refuse('EVENT_CLAIM_FAILED'); }
         if (!event) return null;
         if (event.exhausted) return dto(event);
         let result;
         try { result = await verify(event); } catch { result = outcome('PENDENTE', 'PROCESSING_FAILED'); }
         try { return await finish(event, result); } catch { refuse('EVENT_ACK_FAILED'); }
-    } };
+    }
+    return { receive: raw => receive(raw),
+        // A correlated return requests verification; it never supplies a payment proof.
+        receiveReturn: input => receive({ source: 'RETURN',
+            ...Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined)) }, raw => ({ type: 'created', ...raw })),
+        processNext: () => process(),
+        processEvent: eventId => {
+            if (!/^[1-9]\d*$/.test(String(eventId))) refuse('INVALID_EVENT', 400);
+            return process(eventId);
+        } };
 }
