@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet('Postgres', 'Backend', 'Tunnel', 'Verify', 'Status', 'Credential', 'Stop')]
+    [ValidateSet('Postgres', 'Backend', 'Tunnel', 'Verify', 'Status', 'Credential', 'Stop', 'CreateLink', 'Result')]
     [string]$Action
 )
 $ErrorActionPreference = 'Stop'
@@ -115,10 +115,11 @@ switch ($Action) {
         return
     }
 }
-$nodeAction = @{ Backend = 'serve'; Verify = 'verify'; Status = 'status' }[$Action]
+$nodeAction = @{ Backend = 'serve'; Verify = 'verify'; Status = 'status'; CreateLink = 'create-link'; Result = 'result' }[$Action]
 if ($Action -eq 'Backend' -and (Get-ManagedProcess 'backend_pid' (Get-Command node.exe).Source)) { throw 'O backend H1 já está em execução.' }
 $variables = @('NODE_ENV', 'INFINITEPAY_CHECKOUT_ENABLED', 'DATABASE_URL', 'PGHOST', 'PGPORT', 'PGDATABASE', 'PGUSER', 'PGPASSWORD', 'TEST_DATABASE_URL',
-    'H1_SETTINGS_FILE', 'H1_DB_PASSWORD', 'H1_OBSERVATION_KEY')
+    'H1_SETTINGS_FILE', 'H1_DB_PASSWORD', 'H1_OBSERVATION_KEY', 'H1_API_KEY', 'INFINITEPAY_ENCRYPTION_KEY', 'INFINITEPAY_ENCRYPTION_KEYS',
+    'INFINITEPAY_ENCRYPTION_KEY_VERSION', 'NODE_OPTIONS', 'NODE_DEBUG', 'NODE_DEBUG_NATIVE', 'DEBUG')
 $previous = @{}
 try {
     foreach ($variable in $variables) { $previous[$variable] = [Environment]::GetEnvironmentVariable($variable, 'Process'); [Environment]::SetEnvironmentVariable($variable, $null, 'Process') }
@@ -127,8 +128,16 @@ try {
     $env:H1_SETTINGS_FILE = $statePath
     $env:H1_DB_PASSWORD = [Net.NetworkCredential]::new('', (ConvertTo-SecureString $settings.db_password_dpapi)).Password
     $env:H1_OBSERVATION_KEY = [Net.NetworkCredential]::new('', (ConvertTo-SecureString $settings.encryption_key_dpapi)).Password
+    if ($Action -eq 'CreateLink') {
+        $credentialPath = Join-Path $privateDirectory 'api-key.dpapi'
+        if (-not (Test-Path -LiteralPath $credentialPath)) {
+            throw 'Configure a API Key com -Action Credential antes de criar o link.'
+        } else {
+            $env:H1_API_KEY = [Net.NetworkCredential]::new('', (ConvertTo-SecureString (Get-Content -LiteralPath $credentialPath -Raw).Trim())).Password
+        }
+    }
     & node.exe $nodeScript $nodeAction
-    if ($LASTEXITCODE -ne 0) { throw 'A validação H1 falhou; nenhuma operação financeira está autorizada por este comando.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Operação H1 interrompida. Consulte -Action Result; não repita uma criação financeira.' }
     if ($Action -eq 'Status') { Write-Output ('API Key provisionada: ' + (Test-Path -LiteralPath (Join-Path $privateDirectory 'api-key.dpapi'))) }
 } finally {
     foreach ($variable in $variables) { [Environment]::SetEnvironmentVariable($variable, $previous[$variable], 'Process') }

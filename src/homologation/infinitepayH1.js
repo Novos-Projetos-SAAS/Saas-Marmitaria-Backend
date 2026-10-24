@@ -1,6 +1,6 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
-import { createCipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createInfinitepayRuntime } from '../infinitepayRuntime.js';
 import paymentRoutes from '../routes/Pagamentos.Routes.js';
 import { buildCheckoutPayload, InfinitepayClientError } from '../services/infinitepayClient.js';
@@ -40,12 +40,23 @@ function originUrl(value) {
     } catch { throw unavailable(); }
 }
 
-function encryptObservation(value, key) {
+export function encryptH1Observation(value, key) {
     if (!Buffer.isBuffer(key) || key.length !== 32) throw unavailable();
     const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key, iv);
     cipher.setAAD(Buffer.from('infinitepay:h1:observation:v1'));
     const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
     return { version: 1, iv: iv.toString('base64'), ciphertext: ciphertext.toString('base64'), tag: cipher.getAuthTag().toString('base64') };
+}
+
+export function decryptH1Observation(envelope, key) {
+    try {
+        if (!Buffer.isBuffer(key) || key.length !== 32 || envelope?.version !== 1) throw unavailable();
+        const iv = Buffer.from(envelope.iv, 'base64'), tag = Buffer.from(envelope.tag, 'base64');
+        if (iv.length !== 12 || tag.length !== 16) throw unavailable();
+        const decipher = createDecipheriv('aes-256-gcm', key, iv);
+        decipher.setAAD(Buffer.from('infinitepay:h1:observation:v1')); decipher.setAuthTag(tag);
+        return JSON.parse(Buffer.concat([decipher.update(Buffer.from(envelope.ciphertext, 'base64')), decipher.final()]).toString('utf8'));
+    } catch { throw unavailable(); }
 }
 
 function safeHeaders(headers) {
@@ -57,7 +68,7 @@ async function observe(db, key, kind, observation) {
     const identityHeaders = Object.fromEntries(Object.entries(observation.headers).filter(([name]) =>
         !/^(cf-|x-forwarded-|host$|connection$|accept-encoding$)/i.test(name)).sort(([a], [b]) => a.localeCompare(b)));
     const eventKey = 'h1:' + kind + ':' + digest(JSON.stringify({ body: observation.body, status: observation.status ?? null, headers: identityHeaders }));
-    const payload = encryptObservation(observation, key);
+    const payload = encryptH1Observation(observation, key);
     payload.body_sha256 = digest(String(observation.body));
     // These are unhomologated captures, never normalized provider events or proof of payment.
     await db.transaction(async trx => {
