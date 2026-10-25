@@ -1,4 +1,4 @@
-import app from './app.js';
+import { initializeInfinitepayApplication, validateInfinitepayEnvironment } from './infinitepayApplication.js';
 
 import chalk from 'chalk';
 import logSymbols from 'log-symbols';
@@ -7,9 +7,11 @@ import { createServer } from 'http';
 import { Server } from 'socket.io';
 import jwt from 'jsonwebtoken';
 
-import connection from './database/connection.js';
 
 dotenv.config();
+const financialEnvironment = validateInfinitepayEnvironment(process.env);
+const { default: app } = await import('./app.js');
+const { default: connection } = await import('./database/connection.js');
 
 const PORT = process.env.PORT || 3333;
 
@@ -118,6 +120,30 @@ io.on('connection', socket => {
     });
 });
 
-httpServer.listen(PORT, () => {
-    console.log(`\n${logSymbols.success} ${chalk.cyan(`API rodando na porta ${PORT}`)}`);
-});
+let financial, shutdown;
+async function closeServer() {
+    if (shutdown) return shutdown;
+    shutdown = (async () => {
+        const pending = financial?.stop();
+        await new Promise(resolve => io.close(resolve));
+        if (httpServer.listening) await new Promise(resolve => httpServer.close(resolve));
+        await pending;
+        await connection.destroy();
+    })();
+    return shutdown;
+}
+try {
+    financial = await initializeInfinitepayApplication({ app, db: connection });
+    await new Promise((resolve, reject) => {
+        httpServer.once('error', reject);
+        httpServer.listen(PORT, financialEnvironment ? '127.0.0.1' : undefined, resolve);
+    });
+    financial.start();
+    console.log(`\n${logSymbols.success} ${chalk.cyan(`API rodando na porta ${httpServer.address().port}`)}`);
+    for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => {
+        closeServer().catch(() => { process.exitCode = 1; });
+    });
+} catch {
+    console.error('Inicialização indisponível; confira a configuração local sem registrar credenciais.');
+    await closeServer(); process.exitCode = 1;
+}

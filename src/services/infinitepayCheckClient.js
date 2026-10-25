@@ -134,7 +134,7 @@ export function createInfinitepayCheckClient(configuration = {}) {
                     if (controller.signal.aborted || !result || !Number.isInteger(result.status) || result.status < 200 || result.status >= 300) throw invalid();
                     const data = await result.json();
                     if (controller.signal.aborted) throw invalid();
-                    const parsed = await parsePaymentCheck(data);
+                    const parsed = await parsePaymentCheck(data, expected);
                     if (controller.signal.aborted) throw invalid();
                     return normalizedPayment(parsed, expected, allowedOrigins);
                 })();

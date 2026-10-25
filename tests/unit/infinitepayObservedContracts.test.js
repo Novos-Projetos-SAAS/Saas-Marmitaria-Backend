@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseObservedInfinitepayEvent } from '../../src/services/infinitepayObservedContracts.js';
+import { parseObservedInfinitepayEvent, parseObservedCreatedLink, parseObservedPaymentCheck } from '../../src/services/infinitepayObservedContracts.js';
 
 const base = { order_nsu: 'SYNTHETIC_ORDER', invoice_slug: 'SYNTHETIC_INVOICE' };
 for (const type of ['created', 'paid', 'settled']) test('observed ' + type + ' maps identifiers without manufacturing transaction, receipt or financial proof', () => {
@@ -24,4 +24,18 @@ test('unobserved lifecycle event contracts are blocked instead of guessed', () =
     for (const event_type of ['refunded', 'canceled', 'payment_failed', 'unknown', null]) {
         assert.throws(() => parseObservedInfinitepayEvent({ ...base, event_type }));
     }
+});
+
+test('normal checkout parser accepts only the observed url field on the exact HTTPS origin', () => {
+    assert.deepEqual(parseObservedCreatedLink({url:'https://checkout.infinitepay.io/synthetic'}),{checkoutUrl:'https://checkout.infinitepay.io/synthetic'});
+    for(const value of ['http://checkout.infinitepay.io/a','https://checkout.infinitepay.io.evil.test/a','https://evil.test/a',
+        'https://checkout.infinitepay.io@evil.test/a','https://checkout.infinitepay.io/a#token','https://checkout.infinitepay.io/%0a']) assert.throws(()=>parseObservedCreatedLink({url:value}));
+    for(const value of [{link:'https://checkout.infinitepay.io/a'},null,[],{url:' '}]) assert.throws(()=>parseObservedCreatedLink(value));
+});
+test('normal payment_check parser separates paid amount, checks echoed IDs and never invents lifecycle state', () => {
+    const expected={orderNsu:'synthetic-order',invoiceSlug:'synthetic-slug',transactionNsu:'synthetic-txn'};
+    const raw={success:true,paid:true,amount:100,paid_amount:110,installments:1,capture_method:'credit_card',financial_state:'ESTORNADA'};
+    assert.deepEqual(parseObservedPaymentCheck(raw,expected),{paid:true,amount:100,paidAmount:110,installments:1,captureMethod:'credit_card'});
+    for(const change of [{success:false},{order_nsu:'other'},{transaction_nsu:null},{slug:'other'},{receipt_url:'https://recibo.infinitepay.io/other'}]) assert.throws(()=>parseObservedPaymentCheck({...raw,...change},expected));
+    assert.equal(parseObservedPaymentCheck({...raw,receipt_url:'https://recibo.infinitepay.io/synthetic-txn'},expected).receiptUrl,'https://recibo.infinitepay.io/synthetic-txn');
 });

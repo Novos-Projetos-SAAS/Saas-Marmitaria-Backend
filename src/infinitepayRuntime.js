@@ -31,15 +31,21 @@ function successLocation(value) {
 // The composition root must supply homologated adapters before enabling this runtime.
 export function createInfinitepayRuntime({ db, checkoutClient, checkClient, parseEvent, deliver,
     redirectUrl, webhookUrl, successUrl, receiptOrigins = [], now = () => new Date(),
-    creationEnabled, statusReferenceInFragment = true } = {}) {
+    creationEnabled, activationCheck = async () => true, dispatchStateAllowed = () => true, environment = process.env, statusReferenceInFragment = true } = {}) {
     if (typeof statusReferenceInFragment !== 'boolean') throw new TypeError('Destino de consulta inválido.');
     if (creationEnabled !== undefined && (typeof creationEnabled !== 'function' || process.env.NODE_ENV !== 'test')) {
         throw new TypeError('Gate de criação simulado permitido somente em testes.');
     }
-    const creationGate = creationEnabled ?? (async trx => process.env.INFINITEPAY_CHECKOUT_ENABLED === 'true' &&
+    const creationGate = creationEnabled ?? (async trx => environment.INFINITEPAY_CHECKOUT_ENABLED === 'true' &&
         (await trx('config_infinitepay').where({ id: 1 }).forShare().first('ativo'))?.ativo === true);
     const destination = successLocation(successUrl);
-    const orchestrator = createPaymentOrchestrator({ db, client: checkoutClient, redirectUrl, webhookUrl, now });
+    const orchestrator = createPaymentOrchestrator({ db, client: checkoutClient, redirectUrl, webhookUrl, now,
+        withDispatchPermit: action => db.transaction(async trx => {
+            // Deactivation cannot acknowledge while an authorized dispatch still owns this shared lock.
+            await trx('config_infinitepay').where({ id: 1 }).forShare().first('id');
+            if (!await checkoutEnabled(trx) || dispatchStateAllowed() !== true) throw financialHttpError(503);
+            return action();
+        }) });
     const events = createInfinitepayEventsService({ db, client: checkClient, parseEvent, receiptOrigins, now });
     const outbox = createPaymentOutboxService({ db, deliver, now });
 
@@ -62,7 +68,7 @@ export function createInfinitepayRuntime({ db, checkoutClient, checkClient, pars
             return access.pedido_id;
         });
     }
-    async function checkoutEnabled(trx = db) { return await creationGate(trx) === true; }
+    async function checkoutEnabled(trx = db) { return await creationGate(trx) === true && await activationCheck(trx) === true; }
     async function resume(pedidoId, input) {
         if (!input || Array.isArray(input) || Object.keys(input).some(key => key !== 'client_request_id')) throw financialHttpError(400);
         const clientRequestId = uuid(input.client_request_id);
@@ -118,12 +124,13 @@ export function createInfinitepayRuntime({ db, checkoutClient, checkClient, pars
 }
 
 // Explicit lifecycle only: importing the application never starts a financial worker.
-export function startInfinitepayProcessing(runtime, { intervalMs = 1000 } = {}) {
+export function startInfinitepayProcessing(runtime, { intervalMs = 1000, onCycle = () => {} } = {}) {
     if (typeof runtime?.processPending !== 'function' || !Number.isSafeInteger(intervalMs) || intervalMs < 10) throw new TypeError('Worker inválido.');
     let pending, stopped = false;
     const tick = () => {
         if (stopped || pending) return;
-        pending = Promise.resolve().then(() => runtime.processPending()).catch(() => undefined).finally(() => { pending = undefined; });
+        pending = Promise.resolve().then(() => runtime.processPending()).then(onCycle)
+            .catch(() => onCycle({ errors: 1 })).finally(() => { pending = undefined; });
     };
     const timer = setInterval(tick, intervalMs); timer.unref(); tick();
     return { async stop() { stopped = true; clearInterval(timer); await pending; } };

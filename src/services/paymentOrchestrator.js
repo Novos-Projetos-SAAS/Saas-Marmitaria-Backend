@@ -52,7 +52,7 @@ export function snapshot(order, items, composition, method) {
     return { total, payloadHash: hash(JSON.stringify(content)) };
 }
 
-export function createPaymentOrchestrator({ db, client, redirectUrl, webhookUrl, now = () => new Date(), orderNsuPrefix = 'PED' } = {}) {
+export function createPaymentOrchestrator({ db, client, redirectUrl, webhookUrl, now = () => new Date(), orderNsuPrefix = 'PED', withDispatchPermit = action => action() } = {}) {
     if (!db || typeof db.transaction !== 'function' || typeof client?.createCheckout !== 'function' || typeof now !== 'function' ||
         typeof orderNsuPrefix !== 'string' || !/^[A-Z][A-Z0-9-]{0,31}$/.test(orderNsuPrefix)) {
         refuse('PREPARATION_BLOCKED', 503);
@@ -134,9 +134,11 @@ export function createPaymentOrchestrator({ db, client, redirectUrl, webhookUrl,
         // Only the transaction winner dispatches. Abandoned/uncertain reservations are never automatically reclaimed.
         let apiKey, sent = false, result, outcome = 'AGUARDANDO';
         try {
-            apiKey = decryptApiKey(reservation.credential, reservation.attempt.handle_snapshot);
-            sent = true;
-            result = await client.createCheckout({ apiKey, payload: reservation.payload });
+            result = await withDispatchPermit(() => {
+                apiKey = decryptApiKey(reservation.credential, reservation.attempt.handle_snapshot);
+                sent = true;
+                return client.createCheckout({ apiKey, payload: reservation.payload });
+            });
             safeUrl(result?.checkoutUrl);
             if (result.invoiceSlug !== undefined && (typeof result.invoiceSlug !== 'string' || !result.invoiceSlug.trim() || /[\r\n\0]/.test(result.invoiceSlug))) throw new Error();
         } catch (error) {

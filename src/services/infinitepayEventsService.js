@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { decryptApiKey } from '../utils/infinitepayCredentials.js';
+import { receiptMatchesTransaction } from './infinitepayObservedContracts.js';
 
 const eventTypes = new Set(['created', 'paid', 'settled', 'refunded', 'canceled', 'payment_failed']);
 const confirmedStates = new Set(['PAGA', 'LIQUIDADA', 'ESTORNADA']);
@@ -82,7 +83,8 @@ export function createInfinitepayEventsService({ db, client, parseEvent, receipt
             if (invoiceSlug && slug && invoiceSlug !== slug) refuse('AMBIGUOUS_IDENTIFIER', 400);
             filtered = { version: 1, type: parsed.type,
                 ...Object.fromEntries(Object.entries({ orderNsu: identifier(parsed.orderNsu, 120, true),
-                    transactionNsu: identifier(parsed.transactionNsu, 255, true), invoiceSlug: invoiceSlug || slug }).filter(([, value]) => value !== undefined)) };
+                    transactionNsu: identifier(parsed.transactionNsu, 255, true), invoiceSlug: invoiceSlug || slug,
+                    receiptUrl: receiptMatchesTransaction(parsed.receiptUrl,parsed.transactionNsu) ? parsed.receiptUrl : undefined }).filter(([, value]) => value !== undefined)) };
             key = 'ip:event:v1:' + createHash('sha256').update(canonical).digest('hex');
         } catch (error) {
             if (error instanceof FinancialEventError) throw error;
@@ -201,7 +203,8 @@ export function createInfinitepayEventsService({ db, client, parseEvent, receipt
                 atualizado_em: instant, error_code: null,
                 ...(next === 'LIQUIDADA' ? { liquidado_em: current.liquidado_em || instant } : {}),
                 ...(next === 'ESTORNADA' ? { estornado_em: current.estornado_em || instant } : {}),
-                ...(safeReceipt(proof.receiptUrl, origins) ? { receipt_url: safeReceipt(proof.receiptUrl, origins) } : {}) });
+                ...(safeReceipt(proof.receiptUrl, origins) ? { receipt_url: safeReceipt(proof.receiptUrl, origins) }
+                    : receiptMatchesTransaction(signal.receiptUrl,ids.transactionNsu) ? { receipt_url: signal.receiptUrl } : {}) });
             if (next !== 'ESTORNADA') {
                 if (!lockedOrder.liberado_cozinha_em) await trx('pedidos').where({ id: lockedOrder.id }).update({ liberado_cozinha_em: instant });
                 await trx('outbox_eventos').insert({ pedido_id: lockedOrder.id, tipo: 'PEDIDO_LIBERADO', chave_unica: 'pedido_liberado:' + lockedOrder.id,

@@ -71,7 +71,7 @@ before(async () => {
         methods: await db('metodos_pagamento').orderBy('id'), events: await db('pagamentos_eventos').orderBy('id') };
     const listener = query => migrationQueries.push(query.sql);
     db.on('query', listener);
-    try { await db.migrate.latest(); } finally { db.removeListener('query', listener); }
+    try { await db.migrate.up({ name: '20261025000100_relatorios_financeiros.js' }); } finally { db.removeListener('query', listener); }
 });
 after(async () => { await fixture?.close(); });
 

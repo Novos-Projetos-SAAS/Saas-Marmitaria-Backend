@@ -994,3 +994,33 @@ test('financial reports preserve permissions and return explicit definitions wit
     assert.match(result.data.notas, /LIQUIDADA/);
     assert.ok(!JSON.stringify(result).includes('dashboard-synthetic-txn'));
 });
+
+test('normal administrative activation validates environment, credential, mappings and worker with RBAC/CSRF', async () => {
+    const app=(await import('../../src/app.js')).default;
+    const oldRuntime=app.locals.infinitepayRuntime;
+    const {initializeInfinitepayApplication}=await import('../../src/infinitepayApplication.js');
+    const {encryptApiKey}=await import('../../src/utils/infinitepayCredentials.js');
+    const [credential]=await f.db('infinitepay_credenciais').insert({handle:'activation-synthetic',...encryptApiKey('SYNTHETIC_ACTIVATION_KEY','activation-synthetic')}).returning('*');
+    await f.db('metodos_pagamento').where({id:33}).update({codigo:'PIX',tipo_financeiro:'PIX'});
+    await f.db('metodos_pagamento').where({id:34}).update({codigo:'CARTAO_CREDITO',tipo_financeiro:'CREDITO'});
+    await f.db('dados_empresa').update({imprimir_automaticamente:false});
+    await f.db('config_infinitepay').where({id:1}).update({ativo:false,handle:credential.handle,credencial_atual_id:credential.id});
+    const settings={NODE_ENV:'development',INFINITEPAY_MODE:'homologation',DB_HOST:'127.0.0.1',DB_NAME:'infinitepay_phase1_test',
+        INFINITEPAY_DATABASE_NAME:'infinitepay_phase1_test',INFINITEPAY_CHECKOUT_ENABLED:'true',INFINITEPAY_PUBLIC_ORIGIN:'https://backend.invalid.test',
+        INFINITEPAY_SUCCESS_URL:'https://shop.invalid.test/pedido/sucesso',ALLOWED_ORIGINS:'https://shop.invalid.test',
+        INFINITEPAY_ALLOWED_PUBLIC_ORIGINS:'https://backend.invalid.test,https://shop.invalid.test'};
+    const service=await initializeInfinitepayApplication({app,db:f.db,env:settings,transport:async()=>{throw new Error('No provider requests allowed');}});
+    try {
+        assert.equal((await write({ativo:true})).status,400,'worker must be running');
+        service.start({intervalMs:60000});
+        assert.equal((await (await request()).json()).activation_available,true);
+        assert.equal((await write({ativo:true},{id:3})).status,403);
+        assert.equal((await request(undefined,{method:'PUT',body:{ativo:true}})).status,403);
+        const activated=await write({ativo:true}); assert.equal(activated.status,200); assert.equal((await activated.json()).data.ativo,true);
+        assert.equal((await write({remove_api_key:true})).status,400);
+        assert.equal((await write({ativo:false})).status,200);
+        settings.INFINITEPAY_CHECKOUT_ENABLED='false';
+        assert.equal((await write({ativo:true})).status,400);
+        assert.equal((await f.db('config_infinitepay').first()).ativo,false);
+    } finally {await service.stop();app.locals.infinitepayRuntime=oldRuntime;delete app.locals.infinitepayActivation;}
+});
