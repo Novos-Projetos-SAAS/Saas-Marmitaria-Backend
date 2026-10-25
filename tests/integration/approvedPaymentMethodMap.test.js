@@ -158,14 +158,14 @@ describe('approved real payment identity map on synthetic PostgreSQL data', { co
         await Promise.all([mod.up(db), mod.up(db)]);
         assert.deepEqual((await db('metodos_pagamento').orderBy('id')).map(({ id, nome, codigo, tipo_financeiro }) => ({ id, nome, codigo, tipo_financeiro })), approved);
     });
-    test('previous main schema and the five InfinitePay migrations apply together to the approved historical methods', async () => {
+    test('previous main schema, financial migrations and checkout sessions preserve the approved historical methods', async () => {
         const historical = await createTestDatabase();
         try {
             await migrateBaseline(historical.db);
             await historical.db('metodos_pagamento').insert(approved.map(({ id, nome }) => ({ id, nome, ativo: true })));
             const applied = await historical.db.migrate.latest();
-            assert.equal(applied[1].length, 5);
-            assert.equal(applied[1].at(-1), migrationName);
+            assert.equal(applied[1].length, 6);
+            assert.deepEqual(applied[1].slice(-2), [migrationName, '20261024000100_checkout_sessoes.js']);
             const rows = await historical.db('metodos_pagamento').orderBy('id');
             assert.deepEqual(rows.map(({ id, nome, codigo, tipo_financeiro }) => ({ id, nome, codigo, tipo_financeiro })), approved);
             assert.equal((await historical.db('config_infinitepay').first()).ativo, false);

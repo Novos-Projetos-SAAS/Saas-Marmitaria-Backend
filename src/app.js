@@ -18,6 +18,8 @@ import KeepAliveRoutes from './routes/KeepAlive.Routes.js'
 import DadosEmpresaRoutes from './routes/DadosEmpresa.Routes.js'
 import InfinitepayConfigRoutes from './routes/InfinitepayConfig.Routes.js';
 import PagamentosRoutes from './routes/Pagamentos.Routes.js';
+import CheckoutSessionRoutes from './routes/CheckoutSession.Routes.js';
+import FinanceiroPedidosRoutes from './routes/FinanceiroPedidos.Routes.js';
 import QzRoutes from './routes/Qz.Routes.js'
 import DashboardRoutes from './routes/Dashboard.Routes.js'
 import MarmitasEspeciaisRoutes from './routes/MarmitasEspeciais.Routes.js'
@@ -112,6 +114,8 @@ mountRoutes('/categorias-produtos', CategoriasProdutosRoutes);
 mountRoutes('/produtos', ProdutosRoutes);
 mountRoutes('/keep-alive', KeepAliveRoutes);
 mountRoutes('/configuracoes/infinitepay', InfinitepayConfigRoutes);
+mountRoutes('/pagamentos/sessao', CheckoutSessionRoutes);
+mountRoutes('/pagamentos/admin', FinanceiroPedidosRoutes);
 mountRoutes('/pagamentos', PagamentosRoutes);
 mountRoutes('/configuracoes', DadosEmpresaRoutes);
 mountRoutes('/qz', QzRoutes);

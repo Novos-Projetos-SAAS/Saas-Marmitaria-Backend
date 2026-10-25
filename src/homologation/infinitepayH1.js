@@ -184,7 +184,7 @@ export function createH1App({ db, captureKey, publicOrigin, verifyProxy = async 
     app.set('trust proxy', trustH1Proxy);
     const adapters = createH1ObservationAdapters({ db, captureKey, publicOrigin });
     const runtime = createInfinitepayRuntime({ db, ...adapters, redirectUrl: publicOrigin + H1_RETURN,
-        webhookUrl: publicOrigin + H1_WEBHOOK, successUrl: publicOrigin + H1_RETURN,
+        webhookUrl: publicOrigin + H1_WEBHOOK, successUrl: publicOrigin + H1_RETURN, statusReferenceInFragment: false,
         parseEvent: () => { throw unavailable(); }, deliver: async () => { throw unavailable(); } });
     app.locals.infinitepayRuntime = runtime;
     app.use((req, res, next) => {

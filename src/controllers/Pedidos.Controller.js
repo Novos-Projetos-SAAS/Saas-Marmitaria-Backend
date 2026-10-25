@@ -92,6 +92,14 @@ export const criarPedido = async (req, res, next) => {
 
         trx = await connection.transaction();
 
+        const checkoutSession = res.locals.checkoutSession;
+        const sessionReservation = checkoutSession
+            ? await checkoutSession.service.lockCreation(trx, checkoutSession.token, req.body.client_request_id, req.body) : null;
+        if (sessionReservation?.replay) {
+            await trx.commit();
+            return res.status(200).json({ status: 'success', data: await checkoutSession.service.lookup(checkoutSession.token, req.body.client_request_id) });
+        }
+
         // Revalida as regras críticas no momento exato da criação do pedido.
         await validarLojaAberta(trx);
         const metodo = await validarMetodoPagamento(metodo_pagamento_id, trx);
@@ -175,10 +183,12 @@ export const criarPedido = async (req, res, next) => {
         const reservation = fluxoPagamento === 'INFINITEPAY'
             ? await financialRuntime.reserveCreation(trx, pedido.id, requestId) : null;
         const access = reservation ? await financialRuntime.issueAccess(trx, pedido.id) : null;
+        if (sessionReservation) await checkoutSession.service.attach(trx, sessionReservation, pedido.id);
         await trx.commit();
 
         if (reservation) {
             const checkout = await financialRuntime.finishCreation(reservation);
+            if (checkoutSession) return res.status(201).json({ status: 'success', data: await checkoutSession.service.lookup(checkoutSession.token, req.body.client_request_id) });
             return res.status(201).json({ status: 'success', data: {
                 pedido_id: pedido.id, total: valorTotalPedido, ...checkout, ...access
             } });
@@ -195,6 +205,7 @@ export const criarPedido = async (req, res, next) => {
             console.error(`Erro ao emitir o pedido #${pedido.id} pelo Socket.IO:`, socketError);
         }
 
+        if (checkoutSession) return res.status(201).json({ status: 'success', data: await checkoutSession.service.lookup(checkoutSession.token, req.body.client_request_id) });
         return res.status(201).json({
             status: "success",
             data: {
@@ -599,6 +610,7 @@ export const listarPedidosAdmin = async (req, res, next) => {
             .leftJoin("metodos_pagamento", "pedidos.metodo_pagamento_id", "=", "metodos_pagamento.id")
             .select(
                 "pedidos.*",
+                connection.raw('true AS cozinha_autorizada'),
                 "metodos_pagamento.nome as metodo_pagamento_nome",
                 selecionarMarmitasJson(),
                 selecionarProdutosJson()

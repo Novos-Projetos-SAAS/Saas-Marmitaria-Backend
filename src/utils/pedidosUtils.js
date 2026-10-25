@@ -1984,6 +1984,7 @@ export async function buscarPedidoCompletoPorId(pedidoId) {
         .leftJoin('metodos_pagamento', 'pedidos.metodo_pagamento_id', '=', 'metodos_pagamento.id')
         .select(
             'pedidos.*',
+            connection.raw('true AS cozinha_autorizada'),
             'metodos_pagamento.nome as metodo_pagamento_nome',
             selecionarMarmitasJson(),
             selecionarProdutosJson()

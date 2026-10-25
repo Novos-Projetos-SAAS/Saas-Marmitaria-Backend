@@ -31,7 +31,8 @@ function successLocation(value) {
 // The composition root must supply homologated adapters before enabling this runtime.
 export function createInfinitepayRuntime({ db, checkoutClient, checkClient, parseEvent, deliver,
     redirectUrl, webhookUrl, successUrl, receiptOrigins = [], now = () => new Date(),
-    creationEnabled } = {}) {
+    creationEnabled, statusReferenceInFragment = true } = {}) {
+    if (typeof statusReferenceInFragment !== 'boolean') throw new TypeError('Destino de consulta inválido.');
     if (creationEnabled !== undefined && (typeof creationEnabled !== 'function' || process.env.NODE_ENV !== 'test')) {
         throw new TypeError('Gate de criação simulado permitido somente em testes.');
     }
@@ -93,7 +94,11 @@ export function createInfinitepayRuntime({ db, checkoutClient, checkClient, pars
             query.order_nsu !== payment.order_nsu) throw financialHttpError(400);
         await events.receiveReturn({ orderNsu: payment.order_nsu, transactionNsu: query.transaction_nsu, invoiceSlug: query.slug });
         const ref = await db.transaction(trx => issueToken(trx, payment.pedido_id, 'STATUS', 1));
-        const target = new URL(destination); target.searchParams.set('ref', ref); return target.toString();
+        // A read-only capability stays out of HTTP access logs and resource referrers.
+        const target = new URL(destination);
+        if (statusReferenceInFragment) target.hash = new URLSearchParams({ ref }).toString();
+        else target.searchParams.set('ref', ref);
+        return target.toString();
     }
     async function processPending({ limit = 25 } = {}) {
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError('Limite de processamento inválido.');

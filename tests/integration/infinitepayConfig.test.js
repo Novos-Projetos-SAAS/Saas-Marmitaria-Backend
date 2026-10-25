@@ -715,7 +715,7 @@ test('Phase 2D app mounts financial routes closed by default without exposing qu
     assert.ok(error); assert.equal(JSON.stringify(error).includes('PRIVATE_QUERY_MUST_NOT_LEAK'), false);
 });
 
-async function withOperationalFixture(action, { uncertain = false, enabled = true } = {}) {
+async function withOperationalFixture(action, { uncertain = false, enabled = true, checkoutUrl = 'https://checkout.invalid.test/only-mocked' } = {}) {
     const app = (await import('../../src/app.js')).default;
     const { createInfinitepayRuntime } = await import('../../src/infinitepayRuntime.js');
     const { encryptApiKey } = await import('../../src/utils/infinitepayCredentials.js');
@@ -733,7 +733,7 @@ async function withOperationalFixture(action, { uncertain = false, enabled = tru
             assert.ok(payment, 'order, items and attempt must commit before transport');
             await f.db.transaction(async trx => { await trx('pedidos').where({ id: payment.pedido_id }).forUpdate().noWait().first(); });
             if (uncertain) throw new Error('SYNTHETIC_2D_APP_KEY transport failure');
-            return { checkoutUrl: 'https://checkout.invalid.test/only-mocked', invoiceSlug: 'slug-' + payment.id };
+            return { checkoutUrl, invoiceSlug: 'slug-' + payment.id };
         } }, checkClient: { async checkPayment() { return { paid: false }; } }, parseEvent: raw => raw,
         deliver: async () => {}, redirectUrl: 'https://backend.invalid.test/pagamentos/infinitepay/retorno',
         webhookUrl: 'https://backend.invalid.test/pagamentos/infinitepay/webhook', successUrl: 'https://shop.invalid.test/pedido/sucesso' });
@@ -849,4 +849,107 @@ test('a reserved online UUID cannot fall back to a new posterior order after dis
         assert.deepEqual(await f.db('pedidos').select('*'), orders); assert.deepEqual(await f.db('itens_pedido').select('*'), items);
         assert.equal(sent.length, 1); assert.equal(sockets.length, 0);
     });
+});
+
+async function browserSession() {
+    const response = await fetch(base + '/pagamentos/sessao', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(response.status, 200); return (await response.json()).data;
+}
+async function browserRequest(session, path, { method = 'GET', body, headers = {} } = {}) {
+    return fetch(base + '/pagamentos/sessao' + path, { method, headers: { Authorization: 'Bearer ' + session.session_token,
+        'X-Checkout-CSRF': session.csrf_token, ...(body ? { 'Content-Type': 'application/json' } : {}), ...headers },
+        ...(body ? { body: JSON.stringify(body) } : {}) });
+}
+for (const [methodId, code, type] of [[31,'DINHEIRO','DINHEIRO'],[32,'CARTAO_DEBITO','DEBITO'],[33,'PIX','PIX'],[34,'CARTAO_CREDITO','CREDITO']]) {
+    test('session journey preserves server prices and idempotency for ' + type, async () => {
+        await f.db('metodos_pagamento').where({ id: methodId }).update({ codigo: code, tipo_financeiro: type });
+        await withOperationalFixture(async ({ sent, sockets }) => {
+            const session = await browserSession();
+            const payload = { ...legacyPayload, metodo_pagamento_id: methodId, client_request_id: session.client_request_id, valor_total: 0.01 };
+            const responses = await Promise.all(Array.from({ length: 4 }, () => browserRequest(session, '/pedido', { method: 'POST', body: payload })));
+            assert.ok(responses.every(response => [200,201].includes(response.status)));
+            const current = (await (await browserRequest(session, '/pedido')).json()).data;
+            assert.equal(current.total, 20); assert.equal(current.client_request_id, session.client_request_id);
+            const online = ['PIX','CREDITO'].includes(type);
+            assert.equal(current.fluxo_pagamento, online ? 'INFINITEPAY' : 'POSTERIOR');
+            assert.equal(current.cozinha_liberada, !online); assert.equal(sent.length, online ? 1 : 0);
+            assert.equal(sockets.length, online ? 0 : 1);
+            if (online) assert.equal(current.checkout_url, 'https://checkout.infinitepay.io/SYNTHETIC');
+            assert.doesNotMatch(JSON.stringify(current), /access_token|token_hash|transaction_nsu|receipt_url|SYNTHETIC_2D_APP_KEY/);
+            const stranger = await browserSession();
+            assert.equal((await browserRequest(stranger, '/pedido?requisicao=' + session.client_request_id)).status, 404);
+            assert.equal((await browserRequest(session, '/pedido', { method: 'POST', body: { ...payload, nome_cliente: 'OTHER' } })).status, 409);
+            if (online) assert.equal((await browserRequest(session, '/nova-compra', { method: 'POST', body: {} })).status, 409);
+        }, { checkoutUrl: 'https://checkout.infinitepay.io/SYNTHETIC' });
+    });
+}
+test('session writes enforce JSON and session-bound CSRF without exposing tokens to logs', async () => {
+    const session = await browserSession(), payload = { ...legacyPayload, metodo_pagamento_id: 31, client_request_id: session.client_request_id };
+    assert.equal((await browserRequest(session, '/pedido', { method: 'POST', body: payload, headers: { 'X-Checkout-CSRF': '' } })).status, 403);
+    assert.equal((await browserRequest(session, '/pedido', { method: 'POST', body: payload, headers: { 'Content-Type': 'text/plain' } })).status, 415);
+    assert.equal((await browserRequest(session, '/pedido', { method: 'POST', body: { ...payload, fluxo_pagamento: 'POSTERIOR' } })).status, 400);
+    const logs = JSON.stringify(await f.db('logs').select('payload'));
+    assert.equal(logs.includes(session.session_token), false); assert.equal(logs.includes(session.csrf_token), false);
+});
+test('uncertain session recovers after a lost response and cannot create another attempt', async () => {
+    await withOperationalFixture(async ({ sent }) => {
+        const session = await browserSession();
+        await browserRequest(session, '/pedido', { method: 'POST', body: { ...legacyPayload, metodo_pagamento_id: 33, client_request_id: session.client_request_id } });
+        for (let i = 0; i < 2; i++) {
+            const result = await browserRequest(session, '/retomar', { method: 'POST', body: { client_request_id: session.client_request_id } });
+            assert.equal(result.status, 200); assert.equal((await result.json()).data.pagamento_status, 'INCERTA');
+        }
+        assert.equal(sent.length, 1);
+    }, { uncertain: true });
+});
+test('financial administration is separate from kitchen and printing authorization is checked by the backend', async () => {
+    const order = await pendingOnlineFixture();
+    const admin = await request('/pagamentos/admin'); assert.equal(admin.status, 200);
+    assert.ok((await admin.json()).data.some(row => row.pedido_id === order.id && row.cozinha_autorizada === false));
+    const operational = await request('/pedidos/admin?limit=100');
+    assert.equal((await operational.json()).data.some(row => row.id === order.id), false);
+    assert.equal((await request('/pedidos/' + order.id + '/operacao')).status, 409);
+    assert.equal((await fetch(base + '/pagamentos/admin')).status, 401);
+});
+test('a correlated STATUS return keeps its order and only an owning session can read its receipt', async () => {
+    await f.db('metodos_pagamento').where({ id: 33 }).update({ codigo: 'PIX', tipo_financeiro: 'PIX' });
+    await withOperationalFixture(async ({ app, runtime }) => {
+        const { createCheckoutSessionService } = await import('../../src/services/checkoutSessionService.js');
+        const owner = await browserSession();
+        const response = await browserRequest(owner, '/pedido', { method: 'POST', body: { ...legacyPayload, metodo_pagamento_id: 33, client_request_id: owner.client_request_id } });
+        const order = (await response.json()).data;
+        const access = await f.db.transaction(trx => runtime.issueAccess(trx, order.pedido_id));
+        const sessions = createCheckoutSessionService({ db: f.db, runtime: () => app.locals.infinitepayRuntime });
+        const own = await sessions.lookupStatus(owner.session_token, access.status_ref);
+        assert.equal(own.pedido_id, order.pedido_id);
+        const stranger = await browserSession();
+        const limited = await sessions.lookupStatus(stranger.session_token, access.status_ref);
+        assert.equal(limited.pedido_id, undefined); assert.equal(limited.receipt_url, undefined);
+        assert.equal(limited.cozinha_liberada, false);
+        await f.db('pagamentos').where({ pedido_id: order.pedido_id }).update({ status: 'PAGA', transaction_nsu: 'SYNTHETIC-RETURN-TX',
+            valor_base_provider_centavos: 2000, valor_pago_provider_centavos: 2000, capture_method: 'pix', installments: 1,
+            provider_verified_at: new Date(), pago_em: new Date(), receipt_url: 'https://recibo.infinitepay.io/SYNTHETIC-RETURN-TX' });
+        await f.db('pedidos').where({ id: order.pedido_id }).update({ liberado_cozinha_em: new Date() });
+        await sessions.newRequest(owner.session_token);
+        assert.equal((await sessions.lookup(owner.session_token)).pedido_id, null);
+        const previous = await sessions.lookupStatus(owner.session_token, access.status_ref);
+        assert.equal(previous.pedido_id, order.pedido_id); assert.ok(previous.receipt_url);
+        assert.equal((await sessions.lookupStatus(stranger.session_token, access.status_ref)).receipt_url, undefined);
+    });
+});
+test('admin receipt requires permission, independent verification and exact transaction-bound HTTPS', async () => {
+    const order = await pendingOnlineFixture({ released: true });
+    const payment = await verifiedPaymentFixture(order);
+    assert.equal((await request('/pagamentos/admin/' + order.id + '/comprovante')).status, 404);
+    await f.db('pagamentos').where({ id: payment.id }).update({ receipt_url: 'https://recibo.infinitepay.io/' + payment.transaction_nsu });
+    const receipt = await request('/pagamentos/admin/' + order.id + '/comprovante'); assert.equal(receipt.status, 200);
+    assert.equal((await receipt.json()).data.receipt_url, 'https://recibo.infinitepay.io/' + payment.transaction_nsu);
+    assert.equal((await request('/pagamentos/admin/' + order.id + '/comprovante', { id: 3 })).status, 403);
+    await f.db('pagamentos').where({ id: payment.id }).update({ receipt_url: 'https://recibo.infinitepay.io/OTHER' });
+    assert.equal((await request('/pagamentos/admin/' + order.id + '/comprovante')).status, 404);
+});
+test('printing authorization rejects inactive users and stale admin roles', async () => {
+    const order = await pendingOnlineFixture({ released: true }); await verifiedPaymentFixture(order);
+    assert.equal((await request('/pedidos/' + order.id + '/operacao', { id: 4 })).status, 401);
+    assert.equal((await request('/pedidos/' + order.id + '/operacao', { id: 3 })).status, 403);
 });

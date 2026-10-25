@@ -229,8 +229,8 @@ describe('Fase 2D HTTP wiring with simulated providers only', { concurrency: fal
         const path = '/infinitepay/retorno?r=' + nonce + '&order_nsu=' + payment.order_nsu + '&transaction_nsu=txn-' + payment.order_nsu + '&slug=' + payment.invoice_slug + '&paid=true&receipt_url=https://evil.invalid';
         const response = await request(path); assert.equal(response.status, 303); assert.equal(checkCalls, before);
         const target = new URL(response.headers.get('location')); assert.equal(target.origin, 'https://shop.invalid.test');
-        assert.deepEqual([...target.searchParams.keys()], ['ref']);
-        const ref = target.searchParams.get('ref'); assert.match(ref, /^[A-Za-z0-9_-]{43}$/);
+        assert.equal(target.search, '');
+        const ref = new URLSearchParams(target.hash.slice(1)).get('ref'); assert.match(ref, /^[A-Za-z0-9_-]{43}$/);
         assert.equal((await request('/retomar', { method: 'POST', token: ref, body: { client_request_id: f.uuid } })).status, 404);
         assert.equal((await (await request('/consulta?ref=' + ref)).json()).data.cozinha_liberada, false);
         for (const query of ['r=' + nonce + '&order_nsu=other', 'r=invalid', 'r=' + nonce + '&r=' + nonce]) assert.equal((await request('/infinitepay/retorno?' + query)).status, 400);

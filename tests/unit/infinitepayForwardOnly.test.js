@@ -6,7 +6,8 @@ const migrations = [
     '20261022000200_infinitepay_config_credenciais.js',
     '20261022000300_infinitepay_pagamentos_eventos_acessos_outbox.js',
     '20261022000400_infinitepay_permissoes.js',
-    '20261023000100_classificar_metodos_pagamento_aprovados.js'
+    '20261023000100_classificar_metodos_pagamento_aprovados.js',
+    '20261024000100_checkout_sessoes.js'
 ];
 for (const name of migrations) {
     test(name + ' down rejects before any database interaction', async () => {

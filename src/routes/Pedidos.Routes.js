@@ -11,6 +11,9 @@ import {
 } from "../controllers/Pedidos.Controller.js";
 import { verifyToken } from "../middlewares/verifyToken.js";
 import { checkPermission } from "../middlewares/checkPermission.js";
+import { buscarPedidoCompletoPorId } from '../utils/pedidosUtils.js';
+import { financialHttpError } from '../infinitepayRuntime.js';
+import { requireActiveFinancialUser } from '../middlewares/infinitepayAdminSecurity.js';
 
 const router = Router();
 const registrarOrigem = origem => (req, res, next) => {
@@ -130,6 +133,14 @@ router.post('/', registrarOrigem('PUBLICO'), criarPedido)
 router.get('/rastreio/:telefone', listarPedidosPorTelefoneUsuario)
 
 router.use(verifyToken)
+
+router.get('/:id/operacao', requireActiveFinancialUser, checkPermission('pedidos.listar'), async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    if (!/^[1-9]\d{0,9}$/.test(req.params.id) || Number(req.params.id) > 2147483647) throw financialHttpError(400);
+    const pedido = await buscarPedidoCompletoPorId(Number(req.params.id));
+    if (!pedido) throw financialHttpError(409);
+    res.json({ status: 'success', data: pedido });
+});
 
 router.get(
     '/admin',
