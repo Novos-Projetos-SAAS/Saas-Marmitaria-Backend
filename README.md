@@ -88,3 +88,53 @@ Referências: [guia oficial atual](https://ajuda.infinitepay.io/pt-BR/articles/1
 7. Executar fluxo legado, fluxo financeiro simulado completo, relatórios/exportações e entrega isolada idempotente. Verificar ausência de impressão física e conexões operacionais reais. Somente depois solicitar homologação real de Crédito e autorização da próxima fase.
 8. Produção permanece bloqueada no código desta fase. Antes de implantação comercial, definir e aprovar o modo de produção, banco/origens, proxy confiável, consumidor operacional e política de reprocessamento/reconciliação. Em qualquer incidente, desligar criação preservando credenciais, worker e evidências. Reverter Git não reverte o banco nem cancela links já criados.
 
+## Demonstração local persistente (sem dinheiro real)
+
+O launcher `scripts/infinitepay-demo.ps1` usa PowerShell 7.2+, Node, PostgreSQL18 e o OpenSSL do Git já instalados nesta máquina. Reutiliza **127.0.0.1:55439/infinitepay_phase1_test**, criando somente o schema persistente **infinitepay_demo**. Os testes automáticos continuam usando seus próprios schemas descartáveis. Não acessa H1/55440 ou produção. `Prepare` aplica somente migrations pendentes nesse schema identificado e inicializa dados uma vez, sem apagar registros, executar seeds destrutivos ou redefinir configurações a cada início.
+
+Comandos no PowerShell, a partir de qualquer diretório (ajuste apenas o caminho do checkout se ele for movido):
+
+```powershell
+$demo = 'C:\Users\Passare Store 02\Documents\Codex\2026-10-22\files-mentioned-by-the-user-00\work\Saas-Marmitaria-Backend\scripts\infinitepay-demo.ps1'
+& $demo -Action Start       # PostgreSQL existente + preparação idempotente + Backend + Frontend
+& $demo -Action Status      # PIDs próprios, identidade do ambiente e worker
+& $demo -Action Access      # Exibe somente ao operador a senha sintética inicial
+& $demo -Action Open        # Abre a loja no navegador padrão
+& $demo -Action Logs        # Consulta logs privados/sanitizados
+& $demo -Action Stop        # Drena Backend e encerra somente os processos identificados da demonstração
+```
+
+Também é possível iniciar separadamente com `-Action Postgres`, `-Action Backend` e `-Action Frontend`. O PostgreSQL compartilhado com regressões não é parado por `Stop`; os dados permanecem disponíveis depois de fechar o navegador ou reiniciar os serviços. PIDs são conferidos por início, executável e script antes de encerrar qualquer processo. `Start` recusa portas ocupadas por serviços não identificados.
+
+URLs exclusivamente locais:
+
+- Loja: **https://localhost:55445/pedido**.
+- Administração: **https://localhost:55445/auth/login**, e-mail **admin@demo.invalid**, senha obtida por `Access`.
+- Simulador: **https://localhost:55446/__demo**, depois do login administrativo.
+- Pedidos e consulta financeira: **https://localhost:55445/admin/pedidos**; use a aba **Pagamentos InfinitePay** e **Atualizar pagamentos** para consultar pendências/comprovantes.
+- Relatórios: **https://localhost:55445/admin/relatorios**; dashboard: **https://localhost:55445/admin**.
+
+São certificados exclusivos de localhost, válidos por um ano, sem alteração de QZ/PEM. O navegador inicialmente pode avisar que a autoridade não é reconhecida. Para confiar somente nesse certificado no usuário Windows atual, execute `& $demo -Action TrustCertificate`, confira a impressão digital exibida e digite a confirmação solicitada. A confiança **não é instalada automaticamente**. Backend, Next e comandos de status/encerramento validam a CA local sem `NODE_TLS_REJECT_UNAUTHORIZED=0` ou desativar verificação TLS. Não exponha essas portas à rede ou a um túnel público. Para inspecionar mobile use o modo de dispositivo do navegador local.
+
+O perfil, senha sintética, segredos próprios, certificado/chave TLS, PIDs e logs ficam em `work/infinitepay-demo-private`, fora dos dois repositórios, com ACL restrita ao operador e SYSTEM. Não apague esse perfil: ele preserva a capacidade de ler as credenciais sintéticas e acessar o histórico após reiniciar. Não cadastre API Key real. A credencial financeira aceita neste modo é somente `SYNTHETIC_INFINITEPAY_DEMO_ONLY`; a conta é `demo-sintetica`, sem usar a conta homologada H1. A flag pública `NEXT_PUBLIC_INFINITEPAY_DEMO=local-only` não contém segredo e é recusada fora de development. Origens locais só são admitidas por esse perfil explícito; os fluxos normais conservam as origens oficiais.
+
+Dados disponíveis: tamanhos P/M/G (R$15/20/25 sintéticos), arroz, feijão, proteínas e salada; quatro especiais DEMO; Água/Sobremesa DEMO; Pix, Crédito, Dinheiro e Débito; empresa e administrador sintéticos. A loja começa aberta e a impressão automática desligada. Mudanças feitas manualmente são preservadas.
+
+Para testar, monte uma marmita comum ou especial, adicione complementos e finalize. Pix/Crédito abrem o checkout **local**, onde os botões simulam aprovação pelo provedor. Antes de aprovar, **Continuar aguardando** permite consultar/recarregar o pedido pendente. Depois de aprovar, use **Voltar ao acompanhamento** e aguarde a confirmação do Backend. O comprovante mostra claramente que não possui valor financeiro. Dinheiro/Débito seguem o fluxo posterior existente.
+
+No simulador administrativo, escolha **Pendente**, **Resposta perdida** ou **Erro de rede** para o próximo checkout; o cenário volta a Pendente após um envio. Resposta perdida persiste o link no provedor sintético e mantém INCERTA no sistema; o operador pode abrir o mesmo link pelo painel e aprová-lo, sem criar outro. Erro de rede não cria link no simulador, mas o Backend conserva INCERTA porque não presume essa informação interna. **Reenviar webhook** exercita a deduplicação. Nenhuma ação atualiza diretamente PAGA: a prova vem do cliente `payment_check` com transporte sintético, passando pelo serviço financeiro, worker e outbox existentes. O consumidor registra somente o recebimento durável isolado; atualize a administração para consultar o pedido liberado.
+
+O transporte de simulação não faz rede. O processo Backend recusa fetch externo; o navegador recebe CSP exclusiva de demonstração bloqueando conexões QZ e diálogos de impressão, e `/qz` é recusada pelo gateway local sem alterar o módulo original. Não tente contornar essas proteções para imprimir. O cache `.next-demo` mantém a demonstração separada do build/regressões normais.
+
+`npm run test:demo`, no Frontend com os serviços já ativos, verifica login, desktop/mobile, marmita comum/especial, complementos, quatro meios, pendência, prova independente, comprovante, administração e INCERTA recuperável. Cria somente pedidos sintéticos e **não encerra os serviços nem remove esses registros**. As suítes normais continuam em `npm test` e `npm run test:browser`.
+
+### Passagem futura da demonstração para homologação real de Crédito
+
+Este perfil não pode receber credencial real nem criar checkout real. A proposta de R$1,00 em 1x continua **condicionada à confirmação oficial do mínimo no Checkout Integrado para essa conta**. A pesquisa na documentação oficial não encontrou esse mínimo; artigos sobre pagamento mínimo da fatura ou outros produtos não comprovam o contrato de criação do checkout. Solicitar a confirmação no suporte oficial e registrar a resposta antes de pedir autorização da transação.
+
+Após nova autorização, provisionar um perfil persistente financeiro separado do schema demo, sem H1 e sem produção, com credencial inserida pelo operador e HTTPS público estável para `POST /pagamentos/infinitepay/webhook` e `GET /pagamentos/infinitepay/retorno`. Validar DNS/certificado, roteamento/métodos, proxy confiável, origens e persistência de webhook simulado antes do primeiro link. Nenhuma URL pública de Crédito foi provisionada nesta fase. A conta, chave protegida, valor mínimo/valor autorizado e callbacks efetivos precisam ser conferidos no perfil real; não copiar a credencial H1 automaticamente.
+
+Usar uma reserva durável e um `order_nsu` exclusivo; realizar somente o POST autorizado e manter INCERTA sem novo POST após timeout. Pagamento manual em Crédito/1x, `assured_installments=1` (absorção, não limite de parcelas), sem descontos. Observar resposta `{url}`, domínio, webhook, parcelas, valores e comprovante; verificar independentemente `paid=true`, `amount` igual ao valor aprovado e `capture_method=credit_card`. Não inferir taxas de `paid_amount`. Confirmar vínculo completo antes de qualquer liberação lógica isolada. Recusa, estorno e liquidação só serão homologados com evidência real; nunca pelo botão do simulador.
+
+Continuam pendentes para implantação: HTTPS público estável/proxy, autenticidade de webhook e contratos de recuperação externa de INCERTA, evidências de estorno/liquidação, consumidor operacional de produção, ensaio autorizado de backup real/restauração e revisão de migrations pendentes. O procedimento de backup e desligamento acima permanece aplicável. Nenhuma migration nova é necessária na Fase5B; as tabelas `demo_*` são fixtures privadas do schema de demonstração, não estruturas de produção.
+

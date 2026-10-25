@@ -3,6 +3,7 @@ import { createInfinitepayCheckClient } from './services/infinitepayCheckClient.
 import { parseObservedCreatedLink, parseObservedPaymentCheck, parseObservedInfinitepayEvent } from './services/infinitepayObservedContracts.js';
 import { createInfinitepayRuntime, startInfinitepayProcessing } from './infinitepayRuntime.js';
 import { decryptApiKey } from './utils/infinitepayCredentials.js';
+import { providerOrigins } from './config/infinitepayProviderOrigins.js';
 
 function blocked() {
     return Object.assign(new Error('Ativação indisponível: valide os requisitos do ambiente de homologação.'),
@@ -42,6 +43,8 @@ export function validateInfinitepayEnvironment(env = process.env) {
 export async function initializeInfinitepayApplication({ app, db, env = process.env, transport = globalThis.fetch, now = () => new Date() }) {
     const config=validateInfinitepayEnvironment(env);
     if(!config) return { start(){},async stop(){},status:()=>({running:false,mode:'disabled'}) };
+    const origins=providerOrigins(env);
+    if(origins.demo && (transport === globalThis.fetch || config.publicOrigin !== origins.checkoutOrigin)) throw blocked();
     // Validate the actual connection before issuing any database statement.
     const connection=db.client.config.connection;
     let host=connection?.host, database=connection?.database;
@@ -58,6 +61,7 @@ export async function initializeInfinitepayApplication({ app, db, env = process.
             if(!row?.handle || !row.credencial_atual_id) throw blocked();
             const credential=await trx('infinitepay_credenciais').where({id:row.credencial_atual_id,handle:row.handle,config_id:1}).first();
             if(!credential || !/^[\x21-\x7E]+$/.test(decryptApiKey(credential,row.handle))) throw blocked();
+            if(origins.demo && (row.handle !== 'demo-sintetica' || decryptApiKey(credential,row.handle) !== 'SYNTHETIC_INFINITEPAY_DEMO_ONLY')) throw blocked();
             for(const [codigo,tipo_financeiro] of [['PIX','PIX'],['CARTAO_CREDITO','CREDITO']]) {
                 if(!await trx('metodos_pagamento').where({codigo,tipo_financeiro,ativo:true}).whereNull('deletado_em').first('id')) throw blocked();
             }
@@ -66,14 +70,13 @@ export async function initializeInfinitepayApplication({ app, db, env = process.
             return true;
         } catch { throw blocked(); }
     }
-    const checkoutClient=createInfinitepayClient({transport,parseCreatedLink:parseObservedCreatedLink,
-        checkoutOrigins:['https://checkout.infinitepay.io'],now});
-    const checkClient=createInfinitepayCheckClient({transport,parsePaymentCheck:parseObservedPaymentCheck,
-        receiptOrigins:['https://recibo.infinitepay.io']});
-    const runtime=createInfinitepayRuntime({db,checkoutClient,checkClient,parseEvent:parseObservedInfinitepayEvent,now,environment:env,
+    const checkoutOrigins=[origins.checkoutOrigin], receiptOrigins=[origins.receiptOrigin];
+    const checkoutClient=createInfinitepayClient({transport,parseCreatedLink:data=>parseObservedCreatedLink(data,{checkoutOrigins}),checkoutOrigins,now});
+    const checkClient=createInfinitepayCheckClient({transport,parsePaymentCheck:(data,expected)=>parseObservedPaymentCheck(data,expected,{receiptOrigins}),receiptOrigins});
+    const runtime=createInfinitepayRuntime({db,checkoutClient,checkClient,parseEvent:data=>parseObservedInfinitepayEvent(data,{receiptOrigins}),now,environment:env,
         redirectUrl:config.publicOrigin+'/pagamentos/infinitepay/retorno',
         webhookUrl:config.publicOrigin+'/pagamentos/infinitepay/webhook',successUrl:config.successUrl,
-        receiptOrigins:['https://recibo.infinitepay.io'],
+        receiptOrigins,
         activationCheck:async trx=>{try{return await assertReady(trx);}catch{return false;}},
         dispatchStateAllowed:()=>running && env.INFINITEPAY_CHECKOUT_ENABLED === 'true',
         deliver:async dto=>{

@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { financialHttpError } from '../infinitepayRuntime.js';
 import { aplicarElegibilidadeOperacional } from '../utils/pedidoPaymentPolicy.js';
+import { providerOrigins } from '../config/infinitepayProviderOrigins.js';
 
 const hash = value => createHash('sha256').update(value).digest('hex');
 const opaque = value => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value);
@@ -20,7 +21,7 @@ function allowedUrl(value, origin) {
     } catch { return null; }
 }
 export function validatedReceipt(payment) {
-    const value = allowedUrl(payment?.receipt_url, 'https://recibo.infinitepay.io');
+    const value = allowedUrl(payment?.receipt_url, providerOrigins().receiptOrigin);
     if (!value || !['PAGA','LIQUIDADA','ESTORNADA'].includes(payment.status) || !payment.provider_verified_at || !payment.pago_em) return null;
     const url = new URL(value);
     if (url.search || /%(?:2f|5c|2e|25|0[0-9a-f]|1[0-9a-f]|7f)/i.test(value) ||
@@ -78,7 +79,7 @@ export function createCheckoutSessionService({ db, now = () => new Date(), runti
             const payment = await trx('pagamentos').where({ pedido_id: order.id }).orderBy('tentativa_numero', 'desc').first();
             const released = Boolean(await aplicarElegibilidadeOperacional(trx('pedidos')).where('pedidos.id', order.id).first('pedidos.id'));
             const link = payment?.status === 'AGUARDANDO' && new Date(payment.valid_until) > now()
-                ? allowedUrl(payment.checkout_url, 'https://checkout.infinitepay.io') : null;
+                ? allowedUrl(payment.checkout_url, providerOrigins().checkoutOrigin) : null;
             const receipt = released ? validatedReceipt(payment) : null;
             return { client_request_id: id, pedido_id: order.id, total: Number(order.valor_total), fluxo_pagamento: order.fluxo_pagamento,
                 pedido_status: order.status, pagamento_status: payment?.status ?? 'POSTERIOR', cozinha_liberada: released,
