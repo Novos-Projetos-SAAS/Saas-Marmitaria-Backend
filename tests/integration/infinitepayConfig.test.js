@@ -953,3 +953,44 @@ test('printing authorization rejects inactive users and stale admin roles', asyn
     assert.equal((await request('/pedidos/' + order.id + '/operacao', { id: 4 })).status, 401);
     assert.equal((await request('/pedidos/' + order.id + '/operacao', { id: 3 })).status, 403);
 });
+
+test('dashboard reuses financial proof, preserves operational counts and limits special meals to four', async () => {
+    for (let n = 0; n < 8; n++) {
+        const [special] = await f.db('marmitas_especiais').insert({ nome: 'Dashboard sintético ' + n, preco: 20 }).returning('*');
+        const [order] = await f.db('pedidos').insert({ nome_cliente: 'Dashboard sintético', telefone_cliente: '11999999999',
+            tipo_pedido: 'Presencial', metodo_pagamento_id: 33, valor_total: 20, fluxo_pagamento: n < 6 ? 'POSTERIOR' : 'INFINITEPAY',
+            criado_em: '2050-10-25T15:00:00Z' }).returning('*');
+        await f.db('itens_pedido').insert({ pedido_id: order.id, marmita_especial_id: special.id, nome_item_snapshot: special.nome,
+            quantidade: 1, preco_unitario: 20, subtotal: 20 });
+        if (n >= 6) await f.db('pagamentos').insert({ pedido_id: order.id, tentativa_numero: 1, order_nsu: 'dashboard-' + n,
+            status: n === 6 ? 'INCERTA' : 'PAGA', valor_centavos: 2000, valid_until: '2050-10-26T00:00:00Z',
+            ...(n === 7 ? { provider_verified_at: '2050-10-26T01:00:00Z', pago_em: '2050-10-26T01:00:00Z',
+                transaction_nsu: 'dashboard-synthetic-txn', invoice_slug: 'dashboard-synthetic-slug', capture_method: 'pix',
+                valor_base_provider_centavos: 2000, valor_pago_provider_centavos: 2000 } : {}) });
+    }
+    const response = await request('/dashboard?data_inicio=2050-10-25&data_fim=2050-10-25');
+    assert.equal(response.status, 200);
+    const { data } = await response.json();
+    assert.equal(data.cards.faturamento, 140); assert.equal(data.cards.quantidade_pedidos, 8);
+    assert.equal(data.graficos.marmitas_especiais.length, 4);
+    assert.equal(data.financeiro.confirmados, 1); assert.equal(data.financeiro.valor_confirmado, 20);
+    assert.equal(data.financeiro.pendentes_verificacao, 1); assert.equal(data.financeiro.valor_liquido, null);
+    assert.equal(data.financeiro.timezone, 'America/Sao_Paulo');
+    assert.equal(data.graficos.serie_diaria[0].faturamento, 140);
+    assert.equal((await request('/dashboard?data_inicio=2050-02-30')).status, 400);
+});
+
+test('financial reports preserve permissions and return explicit definitions without private provider identifiers', async () => {
+    assert.equal((await request('/relatorios', { id: 3 })).status, 403);
+    const catalog = await (await request('/relatorios')).json();
+    const paymentReport = catalog.data.find(r => r.funcao_db === 'fn_rel_pagamentos_infinitepay');
+    assert.ok(paymentReport);
+    assert.equal((await request('/relatorios/' + paymentReport.id + '/gerar', { id: 3, method: 'POST', body: {} })).status, 403);
+    const response = await request('/relatorios/' + paymentReport.id + '/gerar', { method: 'POST', body: { data_inicio: '2050-10-25', data_fim: '2050-10-25', criterio_temporal: 'confirmacao' } });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.data.dados.length, 1);
+    assert.match(result.data.notas, /America\/Sao_Paulo/);
+    assert.match(result.data.notas, /LIQUIDADA/);
+    assert.ok(!JSON.stringify(result).includes('dashboard-synthetic-txn'));
+});

@@ -8,7 +8,9 @@ export const listarCatalogoRelatorios = async (req, res, next) => {
             .orderByRaw(`
                 CASE funcao_db
                     WHEN 'fn_rel_faturamento_periodo' THEN 10
+                    WHEN 'fn_rel_pagamentos_infinitepay' THEN 11
                     WHEN 'fn_rel_historico_vendas' THEN 20
+                    WHEN 'fn_rel_historico_vendas_financeiro' THEN 20
                     WHEN 'fn_rel_saida_alimentos' THEN 30
                     WHEN 'fn_rel_vendas_tamanho' THEN 40
                     WHEN 'fn_rel_vendas_marmitas_especiais' THEN 41
@@ -85,6 +87,7 @@ export const gerarRelatorio = async (req, res, next) => {
             status: 'success',
             data: {
                 nome: relatorio.nome,
+                notas: notasRelatorio(relatorio.funcao_db),
                 colunas: relatorio.colunas_config,
                 dados: resultado.rows
             }
@@ -94,3 +97,19 @@ export const gerarRelatorio = async (req, res, next) => {
         next(error);
     }
 }
+
+const notasRelatorio = (funcao) => {
+    const base = 'Datas em America/Sao_Paulo. ';
+    if (funcao === 'fn_rel_pagamentos_infinitepay') return base +
+        'Filtro pela data selecionada: pedido, confirmação independente ou estorno comprovado. Uma linha por pedido. ' +
+        'Base confirmada inclui pagamentos posteriormente estornados; não é receita líquida. Cancelamento operacional não é estorno. ' +
+        'LIQUIDADA não comprova repasse bancário. Valor pago pelo comprador não é líquido do estabelecimento. ' +
+        'Valor estornado, taxas e líquido não informados pelo contrato homologado.';
+    if (['fn_rel_faturamento_periodo','fn_rel_historico_vendas_financeiro','fn_rel_vendas_tamanho',
+        'fn_rel_vendas_marmitas_especiais','fn_rel_saida_alimentos','fn_rel_clientes_frequentes'].includes(funcao)) return base +
+        'Filtro pela criação do pedido. Vendas consideradas: POSTERIOR conforme regra legada e InfinitePay com prova independente válida, sem estado ESTORNADA. ' +
+        'Cancelamento operacional não apaga pagamento comprovado; relatórios de itens excluem cancelados. ' +
+        'Quantidade de pedidos no faturamento inclui pendentes e cancelados; ticket médio usa apenas vendas consideradas. ' +
+        'Valores brutos, sem dedução de taxas ou inferência de repasse bancário. Histórico distingue valor do pedido de venda considerada.';
+    return base;
+};

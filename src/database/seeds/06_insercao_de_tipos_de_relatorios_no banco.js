@@ -16,16 +16,16 @@ export async function seed(knex) {
             ]),
             colunas_config: JSON.stringify([
                 { chave: 'data_faturamento', label: 'Data' },
-                { chave: 'qtd_pedidos', label: 'Pedidos Realizados', totalizar: true },
+                { chave: 'qtd_pedidos', label: 'Pedidos (operacional)', totalizar: true },
                 { chave: 'ticket_medio', label: 'Ticket Médio (R$)' },
-                { chave: 'total_faturado', label: 'Faturamento (R$)', totalizar: true }
+                { chave: 'total_faturado', label: 'Vendas consideradas (R$)', totalizar: true }
             ]),
             ativo: true
         },
         {
             nome: 'Histórico de Vendas Completo',
             descricao: 'Listagem detalhada de todos os pedidos realizados no período.',
-            funcao_db: 'fn_rel_historico_vendas',
+            funcao_db: 'fn_rel_historico_vendas_financeiro',
             filtros_config: JSON.stringify([
                 { nome: 'data_inicio', tipo: 'date', label: 'Data Inicial' },
                 { nome: 'data_fim', tipo: 'date', label: 'Data Final' },
@@ -37,7 +37,10 @@ export async function seed(knex) {
                 { chave: 'nome_cliente', label: 'Cliente' },
                 { chave: 'tipo_pedido', label: 'Tipo' },
                 { chave: 'status', label: 'Status' },
-                { chave: 'valor_total', label: 'Valor (R$)', totalizar: true }
+                { chave: 'valor_total', label: 'Valor do pedido (R$)', totalizar: false },
+                { chave: 'fluxo_pagamento', label: 'Fluxo', totalizar: false },
+                { chave: 'situacao_financeira', label: 'Situação financeira', totalizar: false },
+                { chave: 'valor_considerado', label: 'Venda considerada (R$)', totalizar: true }
             ]),
             ativo: true
         },

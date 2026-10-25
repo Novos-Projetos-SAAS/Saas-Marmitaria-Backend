@@ -58,7 +58,7 @@ const validarPeriodo = (query) => {
 };
 
 const filtrarPeriodo = (query, dataInicio, dataFim) => query.whereRaw(
-    "p.criado_em::date BETWEEN ?::date AND ?::date",
+    "p.data_pedido BETWEEN ?::date AND ?::date",
     [dataInicio, dataFim]
 );
 
@@ -71,56 +71,61 @@ export const buscarDashboard = async (req, res, next) => {
     try {
         const { dataInicio, dataFim } = validarPeriodo(req.query);
 
-        const resumoQuery = connection("pedidos as p")
+        const resumoQuery = connection("vw_rel_pedidos_financeiros as p")
             .whereNull("p.deletado_em");
 
         filtrarPeriodo(resumoQuery, dataInicio, dataFim);
 
-        const ultimoPedidoQuery = connection("pedidos as p")
+        const ultimoPedidoQuery = connection("vw_rel_pedidos_financeiros as p")
             .whereNull("p.deletado_em");
 
         filtrarPeriodo(ultimoPedidoQuery, dataInicio, dataFim);
 
         const tamanhosQuery = connection("itens_pedido as ip")
-            .join("pedidos as p", "p.id", "=", "ip.pedido_id")
+            .join("vw_rel_pedidos_financeiros as p", "p.id", "=", "ip.pedido_id")
             .join("tamanhos_marmitas as tm", "tm.id", "=", "ip.tamanho_marmita_id")
             .whereNull("p.deletado_em")
-            .whereNot("p.status", STATUS_CANCELADO);
+            .whereNot("p.status", STATUS_CANCELADO)
+            .where("p.venda_considerada", true);
 
         filtrarPeriodo(tamanhosQuery, dataInicio, dataFim);
 
         const marmitasEspeciaisQuery = connection("itens_pedido as ip")
-            .join("pedidos as p", "p.id", "=", "ip.pedido_id")
+            .join("vw_rel_pedidos_financeiros as p", "p.id", "=", "ip.pedido_id")
             .leftJoin("marmitas_especiais as me", "me.id", "=", "ip.marmita_especial_id")
             .whereNotNull("ip.marmita_especial_id")
             .whereNull("p.deletado_em")
-            .whereNot("p.status", STATUS_CANCELADO);
+            .whereNot("p.status", STATUS_CANCELADO)
+            .where("p.venda_considerada", true);
 
         filtrarPeriodo(marmitasEspeciaisQuery, dataInicio, dataFim);
 
         const alimentosQuery = connection("composicao_item_pedido as cip")
             .join("itens_pedido as ip", "ip.id", "=", "cip.item_pedido_id")
-            .join("pedidos as p", "p.id", "=", "ip.pedido_id")
+            .join("vw_rel_pedidos_financeiros as p", "p.id", "=", "ip.pedido_id")
             .join("alimentos as a", "a.id", "=", "cip.alimento_id")
             .whereNull("p.deletado_em")
-            .whereNot("p.status", STATUS_CANCELADO);
+            .whereNot("p.status", STATUS_CANCELADO)
+            .where("p.venda_considerada", true);
 
         filtrarPeriodo(alimentosQuery, dataInicio, dataFim);
 
-        const pagamentosQuery = connection("pedidos as p")
+        const pagamentosQuery = connection("vw_rel_pedidos_financeiros as p")
             .join("metodos_pagamento as mp", "mp.id", "=", "p.metodo_pagamento_id")
             .whereNull("p.deletado_em")
-            .whereNot("p.status", STATUS_CANCELADO);
+            .whereNot("p.status", STATUS_CANCELADO)
+            .where("p.venda_considerada", true);
 
         filtrarPeriodo(pagamentosQuery, dataInicio, dataFim);
 
-        const entregasQuery = connection("pedidos as p")
+        const entregasQuery = connection("vw_rel_pedidos_financeiros as p")
             .whereNull("p.deletado_em")
-            .whereNot("p.status", STATUS_CANCELADO);
+            .whereNot("p.status", STATUS_CANCELADO)
+            .where("p.venda_considerada", true);
 
         filtrarPeriodo(entregasQuery, dataInicio, dataFim);
 
-        const statusQuery = connection("pedidos as p")
+        const statusQuery = connection("vw_rel_pedidos_financeiros as p")
             .whereNull("p.deletado_em");
 
         filtrarPeriodo(statusQuery, dataInicio, dataFim);
@@ -134,21 +139,20 @@ export const buscarDashboard = async (req, res, next) => {
             alimentos,
             metodosPagamento,
             tiposEntrega,
-            statusPedidos
+            statusPedidos,
+            financeiroResultado
         ] = await Promise.all([
             resumoQuery
                 .select(
                     connection.raw(
-                        "COALESCE(SUM(CASE WHEN p.status <> ? THEN p.valor_total ELSE 0 END), 0) AS faturamento",
-                        [STATUS_CANCELADO]
+                        "COALESCE(SUM(p.valor_venda), 0) AS faturamento"
                     ),
                     connection.raw("COUNT(p.id)::int AS quantidade_pedidos"),
                     connection.raw("COUNT(p.id) FILTER (WHERE p.status = 'Pendente')::int AS pedidos_pendentes"),
                     connection.raw("COUNT(p.id) FILTER (WHERE p.status = 'Em Preparo')::int AS pedidos_em_preparo"),
                     connection.raw("COUNT(p.id) FILTER (WHERE p.status = 'Cancelado')::int AS pedidos_cancelados"),
                     connection.raw(
-                        "COALESCE(ROUND(AVG(CASE WHEN p.status <> ? THEN p.valor_total END), 2), 0) AS ticket_medio",
-                        [STATUS_CANCELADO]
+                        "COALESCE(ROUND(AVG(p.valor_total) FILTER (WHERE p.venda_considerada), 2), 0) AS ticket_medio"
                     )
                 )
                 .first(),
@@ -163,13 +167,13 @@ export const buscarDashboard = async (req, res, next) => {
                 ),
                 resumo_diario AS (
                     SELECT
-                        p.criado_em::date AS data,
-                        COALESCE(SUM(CASE WHEN p.status <> ? THEN p.valor_total ELSE 0 END), 0) AS faturamento,
+                        p.data_pedido AS data,
+                        COALESCE(SUM(p.valor_venda), 0) AS faturamento,
                         COUNT(p.id)::int AS pedidos
-                    FROM pedidos p
+                    FROM vw_rel_pedidos_financeiros p
                     WHERE p.deletado_em IS NULL
-                      AND p.criado_em::date BETWEEN ?::date AND ?::date
-                    GROUP BY p.criado_em::date
+                      AND p.data_pedido BETWEEN ?::date AND ?::date
+                    GROUP BY p.data_pedido
                 )
                 SELECT
                     TO_CHAR(dias.data, 'YYYY-MM-DD') AS data,
@@ -178,7 +182,7 @@ export const buscarDashboard = async (req, res, next) => {
                 FROM dias
                 LEFT JOIN resumo_diario ON resumo_diario.data = dias.data
                 ORDER BY dias.data ASC
-            `, [dataInicio, dataFim, STATUS_CANCELADO, dataInicio, dataFim]),
+            `, [dataInicio, dataFim, dataInicio, dataFim]),
             tamanhosQuery
                 .groupBy("tm.id", "tm.nome")
                 .select("tm.nome")
@@ -221,7 +225,15 @@ export const buscarDashboard = async (req, res, next) => {
                 .groupBy("p.status")
                 .select("p.status as nome")
                 .count({ quantidade: "p.id" })
-                .orderBy("quantidade", "desc")
+                .orderBy("quantidade", "desc"),
+            connection.raw(`SELECT
+                COUNT(*) FILTER (WHERE pagamento_confirmado AND data_confirmacao BETWEEN ?::date AND ?::date)::int AS confirmados,
+                COALESCE(SUM(valor_total) FILTER (WHERE pagamento_confirmado AND data_confirmacao BETWEEN ?::date AND ?::date),0) AS valor_confirmado,
+                COUNT(*) FILTER (WHERE estorno_comprovado AND data_estorno BETWEEN ?::date AND ?::date)::int AS estornos,
+                COUNT(*) FILTER (WHERE data_pedido BETWEEN ?::date AND ?::date AND situacao_financeira IN
+                    ('SEM_TENTATIVA','CRIANDO','AGUARDANDO','INCERTA','PENDENTE_VERIFICACAO','DIVERGENTE'))::int AS pendentes_verificacao
+                FROM vw_rel_pedidos_financeiros WHERE fluxo_pagamento='INFINITEPAY'`,
+                Array.from({ length: 4 }, () => [dataInicio, dataFim]).flat())
         ]);
 
         const serieDiaria = serieResultado.rows.map((item) => ({
@@ -248,6 +260,16 @@ export const buscarDashboard = async (req, res, next) => {
                     ticket_medio: Number(resumo.ticket_medio || 0),
                     pedidos_em_preparo: Number(resumo.pedidos_em_preparo || 0),
                     pedidos_cancelados: Number(resumo.pedidos_cancelados || 0)
+                },
+                financeiro: {
+                    timezone: 'America/Sao_Paulo',
+                    confirmados: Number(financeiroResultado.rows[0].confirmados),
+                    valor_confirmado: Number(financeiroResultado.rows[0].valor_confirmado),
+                    estornos: Number(financeiroResultado.rows[0].estornos),
+                    pendentes_verificacao: Number(financeiroResultado.rows[0].pendentes_verificacao),
+                    valor_estornado: null,
+                    taxas: null,
+                    valor_liquido: null
                 },
                 graficos: {
                     serie_diaria: serieDiaria,
