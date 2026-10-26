@@ -4,7 +4,7 @@ import { verifyToken } from '../middlewares/verifyToken.js';
 import { checkPermission } from '../middlewares/checkPermission.js';
 import { requireActiveFinancialUser } from '../middlewares/infinitepayAdminSecurity.js';
 import { aplicarElegibilidadeOperacional } from '../utils/pedidoPaymentPolicy.js';
-import { validatedReceipt } from '../services/checkoutSessionService.js';
+import { validatedReceipt, availableReceiptOrders } from '../services/checkoutSessionService.js';
 import { financialHttpError } from '../infinitepayRuntime.js';
 
 const router = Router();
@@ -16,9 +16,9 @@ router.get('/', async (req, res) => {
         .select(connection.raw(`(SELECT status FROM pagamentos WHERE pedido_id=pedidos.id ORDER BY tentativa_numero DESC LIMIT 1) AS pagamento_status`))
         .orderBy('pedidos.id', 'desc').limit(100);
     const eligible = new Set((await aplicarElegibilidadeOperacional(connection('pedidos')).whereIn('pedidos.id', rows.map(row => row.pedido_id)).select('pedidos.id')).map(row => row.id));
-    const payments = await connection('pagamentos').whereIn('pedido_id', rows.map(row => row.pedido_id)).orderBy('tentativa_numero', 'desc');
+    const receipts = await availableReceiptOrders(connection, rows.map(row => row.pedido_id));
     res.json({ status: 'success', data: rows.map(row => ({ ...row, cozinha_autorizada: eligible.has(row.pedido_id),
-        comprovante_disponivel: eligible.has(row.pedido_id) && Boolean(validatedReceipt(payments.find(payment => payment.pedido_id === row.pedido_id))) })) });
+        comprovante_disponivel: receipts.has(row.pedido_id) })) });
 });
 router.get('/:id/comprovante', async (req, res) => {
     if (!/^[1-9]\d{0,9}$/.test(req.params.id) || Number(req.params.id) > 2147483647) throw financialHttpError(404);

@@ -2,6 +2,7 @@ import connection from "../database/connection.js";
 import { lancarErro } from "../utils/errorUtils.js";
 import { safeRequestLog } from '../utils/safeRequestLog.js';
 import { lockFinancialRequest } from '../infinitepayRuntime.js';
+import { availableReceiptOrders } from '../services/checkoutSessionService.js';
 import {
     aplicarElegibilidadeOperacional, definirFluxoCriacao, exigirElegibilidadeOperacional,
     exigirMutacaoSemCobranca, metodoPermiteInfinitepay, rejeitarControleFinanceiro
@@ -619,6 +620,9 @@ export const listarPedidosAdmin = async (req, res, next) => {
             .limit(porPagina)
             .offset(offset);
 
+        const receipts = await availableReceiptOrders(connection, pedidos.map(pedido => pedido.id));
+        for (const pedido of pedidos) pedido.comprovante_disponivel = receipts.has(pedido.id);
+        res.set('Cache-Control', 'no-store');
         const totalRegistros = Number(total || 0);
 
         return res.status(200).json({

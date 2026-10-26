@@ -29,6 +29,15 @@ export function validatedReceipt(payment) {
     return value;
 }
 
+export async function availableReceiptOrders(db, ids) {
+    if (!ids.length) return new Set();
+    const eligible = await aplicarElegibilidadeOperacional(db('pedidos')).whereIn('pedidos.id', ids)
+        .whereNull('pedidos.deletado_em').where('pedidos.fluxo_pagamento', 'INFINITEPAY').select('pedidos.id');
+    const payments = await db('pagamentos').whereIn('pedido_id', eligible.map(row => row.id))
+        .distinctOn('pedido_id').orderBy('pedido_id').orderBy('tentativa_numero', 'desc');
+    return new Set(payments.filter(payment => validatedReceipt(payment)).map(payment => payment.pedido_id));
+}
+
 export function createCheckoutSessionService({ db, now = () => new Date(), runtime = () => null } = {}) {
     async function authorize(token, csrfToken, trx = db, lock = false) {
         if (!opaque(token)) throw financialHttpError(404);

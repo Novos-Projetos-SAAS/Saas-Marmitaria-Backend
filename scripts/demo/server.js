@@ -8,6 +8,7 @@ import jwt from 'jsonwebtoken';
 import { Server } from 'socket.io';
 import { loadDemoEnvironment, privateDirectory } from './environment.js';
 import { createDemoProvider, DEMO_ORIGIN } from './provider.js';
+import { closeDemo } from './shutdown.js';
 
 const profile=await loadDemoEnvironment();
 const originalFetch=globalThis.fetch;
@@ -114,7 +115,7 @@ io.on('connection',socket=>socket.join('pedidos'));
 let closing;
 async function close(){
     if(closing)return closing;
-    closing=(async()=>{const pending=financial.stop();await new Promise(resolve=>io.close(resolve));if(server.listening)await new Promise(resolve=>server.close(resolve));await pending;await db.destroy();})();
+    closing=closeDemo({server,io,financial,db});
     return closing;
 }
 for(const signal of ['SIGINT','SIGTERM'])process.once(signal,()=>close().catch(()=>{process.exitCode=1;}));

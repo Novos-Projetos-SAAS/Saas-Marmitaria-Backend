@@ -954,6 +954,20 @@ test('printing authorization rejects inactive users and stale admin roles', asyn
     assert.equal((await request('/pedidos/' + order.id + '/operacao', { id: 3 })).status, 403);
 });
 
+test('operational listing exposes only a receipt availability boolean and rechecks changed proof on access', async () => {
+    const order = await pendingOnlineFixture({ released: true });
+    const payment = await verifiedPaymentFixture(order);
+    const listing = async () => (await (await request('/pedidos/admin?search=' + order.id)).json()).data.find(row => row.id === order.id);
+    assert.equal((await listing()).comprovante_disponivel, false);
+    await f.db('pagamentos').where({ id: payment.id }).update({ receipt_url: 'https://recibo.infinitepay.io/' + payment.transaction_nsu });
+    const available = await listing();
+    assert.equal(available.comprovante_disponivel, true);
+    assert.doesNotMatch(JSON.stringify(available), /receipt_url|transaction_nsu|https:\/\/recibo/);
+    await f.db('pagamentos').where({ id: payment.id }).update({ receipt_url: 'https://attacker.invalid/' + payment.transaction_nsu });
+    assert.equal((await listing()).comprovante_disponivel, false);
+    assert.equal((await request('/pagamentos/admin/' + order.id + '/comprovante')).status, 404);
+});
+
 test('dashboard reuses financial proof, preserves operational counts and limits special meals to four', async () => {
     for (let n = 0; n < 8; n++) {
         const [special] = await f.db('marmitas_especiais').insert({ nome: 'Dashboard sintético ' + n, preco: 20 }).returning('*');
