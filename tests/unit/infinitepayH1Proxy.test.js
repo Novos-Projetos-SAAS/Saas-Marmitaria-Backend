@@ -7,13 +7,22 @@ import { createH1ProxyVerifier } from '../../src/homologation/infinitepayH1Proxy
 const settings = { tunnelPid: 1234, executablePath: 'C:/h1-private/cloudflared.exe' };
 const socket = remotePort => ({ remoteAddress: '127.0.0.1', localPort: 55441, remotePort });
 
+test('existing Windows proxy attestation also supports the isolated Credit port without trusting a direct peer', { skip: process.platform !== 'win32' }, async()=>{
+    let calls=0;
+    const verify=createH1ProxyVerifier({...settings,localPort:55447,execute:async(_file,_args,options)=>{
+        calls++;assert.equal(options.env.H1_LISTEN_PORT,'55447');return {stdout:'verified'};
+    }});
+    assert.equal(await verify({...socket(61001),localPort:55447}),true);
+    assert.equal(await verify(socket(61002)),false);assert.equal(calls,1);
+});
+
 test('Windows peer attestation is shared per socket and bounds concurrent OS queries', { skip: process.platform !== 'win32' }, async () => {
     let calls = 0;
     const pending = [];
     const verify = createH1ProxyVerifier({ ...settings, execute: async (_file, _args, options) => {
         calls++;
         assert.equal(options.env.H1_TUNNEL_PID, '1234');
-        assert.deepEqual(Object.keys(options.env).sort(), ['H1_PEER_PORT', 'H1_PROXY_EXE', 'H1_TUNNEL_PID', 'PATH', 'SystemRoot'].sort());
+        assert.deepEqual(Object.keys(options.env).sort(), ['H1_PEER_PORT', 'H1_LISTEN_PORT', 'H1_PROXY_EXE', 'H1_TUNNEL_PID', 'PATH', 'SystemRoot'].sort());
         assert.equal(options.windowsHide, true); assert.equal(options.timeout, 5000);
         return new Promise(resolve => pending.push(resolve));
     } });
