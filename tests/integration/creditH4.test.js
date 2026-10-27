@@ -12,7 +12,11 @@ const now=()=>new Date('2026-10-26T15:00:00Z');
 function approval(operation='CREATE_LINK', patch={}) {
     return {phase:'H4_CREDIT',operation,amount_centavos:100,method:'credit_card',installments:1,handle:'matheuszxp',
         public_origin:origin,credential_sha256:createHash('sha256').update(apiKey).digest('hex'),
-        minimum_centavos:100,minimum_evidence:'SYNTHETIC_SUPPORT_FIXTURE',approved_at:'2026-10-26T14:00:00Z',expires_at:'2026-10-26T18:00:00Z',...patch};
+        ...(operation==='CREATE_LINK'?{schema_version:2,currency:'BRL',use_limit:1,database:'infinitepay_credit_homologacao',database_host:'127.0.0.1',database_port:55439,
+            database_purpose:'INFINITEPAY_CREDIT_PREPARATION_ONLY',attempt_reference:'70bb57e7-f1f3-498f-a174-0f204c83249f',minimum_status:'NOT_CONFIRMED',
+            minimum_basis:'RESEARCH_AND_OPERATOR_EXPERIENCE',minimum_risk_accepted:true,account_binding:'OPERATOR_DECLARED',approved_by:'INTERACTIVE_LOCAL_OPERATOR'}:
+            {minimum_centavos:100,minimum_evidence:'SYNTHETIC_SUPPORT_FIXTURE'}),
+        approved_at:'2026-10-26T14:55:00Z',expires_at:'2026-10-26T15:10:00Z',...patch};
 }
 before(async()=>{
     fixture=await createTestDatabase();db=fixture.db;await db.migrate.latest();key=randomBytes(32);
@@ -20,8 +24,8 @@ before(async()=>{
     service=createCreditControl({db,captureKey:key,publicOrigin:origin,now});await service.pinOrigin();
 });
 after(async()=>{await fixture?.close();if(savedKey===undefined)delete process.env.INFINITEPAY_ENCRYPTION_KEY;else process.env.INFINITEPAY_ENCRYPTION_KEY=savedKey;});
-test('H4 refuses missing/expired authorization, unconfirmed minimum, wrong amount/origin/method/credential and noninteractive confirmation', async()=>{
-    for(const patch of [{minimum_evidence:''},{minimum_centavos:101},{method:'pix'},{amount_centavos:null},{public_origin:'https://other.trycloudflare.com'},
+test('H4 refuses missing/expired authorization, unacknowledged minimum risk, wrong amount/origin/method/credential and noninteractive confirmation', async()=>{
+    for(const patch of [{minimum_risk_accepted:false},{minimum_centavos:101},{method:'pix'},{amount_centavos:null},{public_origin:'https://other.trycloudflare.com'},
         {credential_sha256:'0'.repeat(64)},{expires_at:'2026-10-26T14:59:00Z'},{installments:2}]){
         assert.throws(()=>authorizeCreditOperation(approval('CREATE_LINK',patch),'CREATE_LINK',{publicOrigin:origin,apiKey,now:now()}));
     }
@@ -46,6 +50,7 @@ test('H4 reserves and dispatches one credit link across concurrency/restart, bin
     await assert.rejects(createCreditControl({db,captureKey:key,publicOrigin:'https://changed.trycloudflare.com',now}).pinOrigin());
     assert.equal((await restarted.checkout()).url,'https://checkout.infinitepay.io/SYNTHETIC-H4');
     assert.equal(Number((await db('pedidos').count('* as n').first()).n),1);
+    assert.equal((await db('pedidos').first()).client_request_id,'70bb57e7-f1f3-498f-a174-0f204c83249f');
     assert.equal(Number((await db('outbox_eventos').count('* as n').first()).n),0);
     assert.equal((await db('pedidos').first()).liberado_cozinha_em,null);
     assert.doesNotMatch(JSON.stringify(await restarted.status()),/SYNTHETIC-H4|SYNTHETIC_H4_KEY_ONLY|order_nsu|transaction_nsu/);
@@ -92,6 +97,15 @@ test('H4 independently checks credit once in observation mode, then reconciles a
     assert.equal(calls,1);
 });
 
+test('H4 independently verified evidence stays bound to the planned authorization attempt',async()=>{
+    const order=await db('pedidos').first();
+    const verification=createCreditVerification({db,captureKey:key,publicOrigin:origin,now});
+    await verification.binding();
+    try{
+        await db('pedidos').where({id:order.id}).update({client_request_id:'008c09a8-9ff5-4eb5-bfd9-110cfc7bc54c'});
+        await assert.rejects(verification.binding());
+    }finally{await db('pedidos').where({id:order.id}).update({client_request_id:order.client_request_id});}
+});
 for(const scenario of ['timeout','http-error','invalid-url','key-echo'])test('H4 preserves a single uncertain reservation after '+scenario,async()=>{
     const f=await createTestDatabase();
     try{

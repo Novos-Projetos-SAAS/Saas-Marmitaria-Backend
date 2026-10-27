@@ -19,6 +19,7 @@ export function createCreditVerification({db,captureKey,publicOrigin,now=()=>new
         const saved=openObservation(marker.payload_filtrado,captureKey),order=await trx('pedidos').where({id:payment.pedido_id}).whereNull('deletado_em').first();
         const method=order && await trx('metodos_pagamento').where({id:order.metodo_pagamento_id}).first();
         if(!order || order.fluxo_pagamento!=='INFINITEPAY' || method?.codigo!=='CARTAO_CREDITO' || method.tipo_financeiro!=='CREDITO' ||
+            (saved.approval.schema_version===2 && order.client_request_id!==saved.approval.attempt_reference) ||
             Number(payment.valor_centavos)!==saved.approval.amount_centavos || payment.order_nsu!==saved.request.order_nsu || payment.handle_snapshot!==saved.approval.handle)throw blocked();
         const items=await trx('itens_pedido').where({pedido_id:order.id}).orderBy('id');
         const composition=await trx('composicao_item_pedido').whereIn('item_pedido_id',items.map(item=>item.id)).orderBy('item_pedido_id').orderBy('alimento_id');

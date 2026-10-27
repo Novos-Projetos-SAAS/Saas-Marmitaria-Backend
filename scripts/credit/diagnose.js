@@ -17,7 +17,7 @@ export async function readCreditDatabase({db,profile,expectedMigrations,publicOr
         if((await trx('credit_identity').first('purpose'))?.purpose!==profile.purpose)return {identity:false};
         const migrations=(await trx('knex_migrations').select('name')).map(row=>row.name).sort();
         if(JSON.stringify(migrations)!==JSON.stringify([...expectedMigrations].sort()))return {identity:true,migrations:false};
-        const config=await trx('config_infinitepay').where({id:1}).first('ativo','assured_installments');
+        const config=await trx('config_infinitepay').where({id:1}).first('ativo','assured_installments','handle');
         const origin=await trx('pagamentos_eventos').where({event_key:H4.origin}).first('payload_filtrado');
         const command=await trx('pagamentos_eventos').where({event_key:H4.command}).first('pagamento_id');
         const payment=command?.pagamento_id && await trx('pagamentos').where({id:command.pagamento_id}).first('status','pedido_id','capture_method');
@@ -29,6 +29,7 @@ export async function readCreditDatabase({db,profile,expectedMigrations,publicOr
             .orWhereNot('status','FALHOU').orWhere('bloqueia_nova_cobranca',true)
             .orWhereNotNull('checkout_url').orWhereNotNull('transaction_nsu').orWhereNotNull('invoice_slug').orWhereNotNull('provider_verified_at'));
         return {identity:true,migrations:true,disabled:config?.ativo===false,one_installment:config?.assured_installments===1,
+            intended_account_compatible:config?.handle===null || config?.handle==='matheuszxp',
             pinned:origin?.payload_filtrado?.origin===publicOrigin,reserved:Boolean(command),attempt_status:payment?.status??null,
             real_link_dispatches:await count(trx('pagamentos_eventos').where({event_key:H4.dispatch})),
             real_check_dispatches:await count(trx('pagamentos_eventos').where({event_key:H4.check})),
@@ -58,6 +59,7 @@ export async function diagnoseCredit({profile,database,endpoints,credential={},p
     add('migrations',!identity?UNKNOWN:migrated?OK:BLOCKED,'Comparação exata das migrations aplicadas com os arquivos atuais; nenhuma migration executada.');
     add('activation',!migrated?UNKNOWN:database.disabled===true?OK:BLOCKED,'config_infinitepay.ativo deve permanecer false. Nenhum worker é iniciado por Diagnose.');
     add('installments_config',!migrated?UNKNOWN:database.one_installment===true?OK:BLOCKED,'A criação H4 exige assured_installments=1 para absorção de taxas; isso não limita o comprador a 1x.');
+    add('account_context',!migrated?UNKNOWN:database.intended_account_compatible===true?OK:BLOCKED,'Conta pretendida: matheuszxp. Configuração local não pode indicar outra conta; titularidade da API Key não foi verificada no provedor.');
     add('pinned_origin',!migrated || !validOrigin?UNKNOWN:database.pinned===true?OK:BLOCKED,'Origem efetiva deve corresponder à origem persistida; Diagnose não a altera.');
     const clean=migrated && database.reserved===false && database.non_probe_attempts===0 && database.provider_observations===0 &&
         database.real_link_dispatches===0 && database.real_check_dispatches===0 && database.financial_confirmation===false && database.kitchen_released===false;
@@ -86,9 +88,11 @@ export async function diagnoseCredit({profile,database,endpoints,credential={},p
     const minimum=Number.isSafeInteger(approval.value?.minimum_centavos) && approval.value.minimum_centavos>0 &&
         approval.value.minimum_centavos<=approval.value.amount_centavos && typeof approval.value.minimum_evidence==='string' && Boolean(approval.value.minimum_evidence.trim());
     add('minimum',minimum?OK:UNKNOWN,minimum?'Evidência aplicável registrada na autorização; origem oficial deve ser conferida pelo responsável.':'Mínimo de Crédito ainda sem evidência aplicável; exemplos de preços não são regra de mínimo.');
+    add('minimum_risk',validApproval && approval.value.minimum_risk_accepted===true?OK:WAIT,
+        'R$ 1,00 é proposta por pesquisa e experiência; aceitar expressamente a incerteza não certifica o mínimo contratual.');
     add('credential_binding',!validApproval || credential.status!=='VALID'?UNKNOWN:approval.value.credential_sha256===credential.fingerprint?OK:BLOCKED,'Vínculo local entre fingerprint da credencial e autorização, sem expor o hash ou a chave.');
     add('interactive',WAIT,'A confirmação exata da operação só será solicitada em futura criação autorizada; Diagnose não a solicita.');
-    const technicalIds=['profile','runtime','credential','origin','tunnel','backend','database','migrations','activation','installments_config','pinned_origin','reservation','callbacks_history','https'];
+    const technicalIds=['profile','runtime','credential','origin','tunnel','backend','database','migrations','activation','installments_config','account_context','pinned_origin','reservation','callbacks_history','https'];
     const technicalReady=technicalIds.every(id=>checks.find(check=>check.id===id)?.status===OK);
     return {checks,first_creation_gate:firstCreationGate,technical_ready:technicalReady,ready_to_create:false,
         financial_operation_performed:false,automatic_retry:false,
@@ -96,11 +100,12 @@ export async function diagnoseCredit({profile,database,endpoints,credential={},p
             real_check_dispatches:database.real_check_dispatches,provider_observations:database.provider_observations,
             other_financial_attempts:database.non_probe_attempts,financial_confirmation:database.financial_confirmation,
             kitchen_released:database.kitchen_released,checkout_enabled:!database.disabled,attempts_by_status:database.attempts_by_status}:null,
-        summary:technicalReady && minimum?'PRONTO TECNICAMENTE — AGUARDANDO AUTORIZAÇÃO FINANCEIRA DO OPERADOR.':
+        summary:technicalReady?(validApproval?'AUTORIZAÇÃO LOCAL REGISTRADA — EXECUÇÃO FINANCEIRA NÃO REALIZADA.':
+            'H4 PREPARADA — AGUARDANDO AUTORIZAÇÃO EXPRESSA PARA R$ 1,00 EM CRÉDITO.'):
             'CRIAÇÃO BLOQUEADA — conferir os requisitos pendentes; nenhuma operação financeira executada.'};
 }
 
-async function runDiagnosis() {
+export async function inspectCreditEnvironment() {
     let profile,endpoints,approval,database,db;
     try{profile=await loadCreditProfile();}catch{}
     try{endpoints=JSON.parse(await readFile(join(privateDirectory,'endpoints.json'),'utf8'));}catch{}
@@ -115,12 +120,11 @@ async function runDiagnosis() {
         }
     }catch{database??={identity:false};}finally{await db?.destroy();}
     const credential={status:process.env.CREDIT_DPAPI_STATUS,fingerprint:process.env.CREDIT_CREDENTIAL_SHA256};
-    delete process.env.CREDIT_CREDENTIAL_SHA256;
     const result=await diagnoseCredit({profile,database,endpoints,approval,credential,
         processes:{backend:process.env.CREDIT_BACKEND_STATUS,tunnel:process.env.CREDIT_TUNNEL_STATUS},
         runtime:{nodeEnv:process.env.NODE_ENV,checkoutEnabled:process.env.INFINITEPAY_CHECKOUT_ENABLED}});
-    console.log(JSON.stringify(result,null,2));
+    return {diagnosis:result,publicOrigin:endpoints?.origin};
 }
 if(process.argv[1] && resolve(process.argv[1])===fileURLToPath(import.meta.url)){
-    try{await runDiagnosis();}catch{console.error('Diagnóstico indisponível; nenhum envio financeiro é permitido.');process.exitCode=1;}
+    try{console.log(JSON.stringify((await inspectCreditEnvironment()).diagnosis,null,2));}catch{console.error('Diagnóstico indisponível; nenhum envio financeiro é permitido.');process.exitCode=1;}
 }

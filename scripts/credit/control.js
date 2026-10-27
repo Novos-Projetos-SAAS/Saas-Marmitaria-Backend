@@ -4,6 +4,7 @@ import { createInfinitepayClient } from '../../src/services/infinitepayClient.js
 import { parseObservedCreatedLink } from '../../src/services/infinitepayObservedContracts.js';
 import { encryptApiKey, decryptApiKey } from '../../src/utils/infinitepayCredentials.js';
 import { aplicarElegibilidadeOperacional } from '../../src/utils/pedidoPaymentPolicy.js';
+import { validateCreationScope } from './authorization.js';
 import { digest, sealObservation, openObservation, observeCredit, readCreditBody } from './observations.js';
 
 export const H4={origin:'h4:public-origin',command:'h4:links:command',dispatch:'h4:links:dispatch',check:'h4:check:dispatch',probe:'h4:preflight:probe'};
@@ -15,10 +16,11 @@ export function creditOrigin(value) {
     return value;
 }
 export function authorizeCreditOperation(approval,operation,{publicOrigin,apiKey,now=new Date()}) {
+    if(operation==='CREATE_LINK')validateCreationScope(approval,now);
+    const minimumValid=operation==='CREATE_LINK' || (Number.isSafeInteger(approval?.minimum_centavos) && approval.minimum_centavos>0 &&
+        approval.minimum_centavos<=approval.amount_centavos && typeof approval.minimum_evidence==='string' && Boolean(approval.minimum_evidence.trim()));
     if(!approval || approval.phase!=='H4_CREDIT' || approval.operation!==operation || approval.method!=='credit_card' || approval.installments!==1 ||
-        !Number.isSafeInteger(approval.amount_centavos) || approval.amount_centavos<1 || !Number.isSafeInteger(approval.minimum_centavos) ||
-        approval.minimum_centavos<1 || approval.minimum_centavos>approval.amount_centavos ||
-        typeof approval.minimum_evidence!=='string' || !approval.minimum_evidence.trim() ||
+        !Number.isSafeInteger(approval.amount_centavos) || approval.amount_centavos<1 || !minimumValid ||
         approval.public_origin!==creditOrigin(publicOrigin) || !/^[A-Za-z0-9_-]{1,150}$/.test(approval.handle||'') || !/^[a-f0-9]{64}$/.test(approval.credential_sha256||'') ||
         !Number.isFinite(Date.parse(approval.approved_at)) || Date.parse(approval.approved_at)>now.getTime() ||
         !Number.isFinite(Date.parse(approval.expires_at)) || Date.parse(approval.expires_at)<=now.getTime() ||
@@ -78,7 +80,9 @@ export function createCreditControl({db,captureKey,publicOrigin,now=()=>new Date
             await db.transaction(async trx=>{
                 await trx.raw('SET LOCAL synchronous_commit=on');await lock(trx);await pinned(trx);
                 const {payment}=await original(trx),payload=JSON.parse(init.body);
+                const order=payment && await trx('pedidos').where({id:payment.pedido_id}).first('client_request_id');
                 if(!payment || payment.status!=='CRIANDO' || payload.order_nsu!==payment.order_nsu || Number(payment.valor_centavos)!==approval.amount_centavos ||
+                    order?.client_request_id!==approval.attempt_reference ||
                     init.headers['X-Api-Key']!==apiKey || new URL(payload.redirect_url).origin!==publicOrigin || payload.webhook.url!==publicOrigin+'/pagamentos/infinitepay/webhook')throw blocked();
                 await trx('pagamentos_eventos').insert({event_key:H4.dispatch,tipo_evento:'H4_RESERVA_ENVIO_LINKS',pagamento_id:payment.id,status_processamento:'PENDENTE_IDENTIFICACAO'});
             });
@@ -108,7 +112,7 @@ export function createCreditControl({db,captureKey,publicOrigin,now=()=>new Date
                 metodo_pagamento_id:method.id,valor_total:amount,fluxo_pagamento:'INFINITEPAY'}).returning('*');
             const [size]=await trx('tamanhos_marmitas').insert({nome:'H4 '+randomUUID(),preco_base:amount}).returning('id');
             await trx('itens_pedido').insert({pedido_id:order.id,tamanho_marmita_id:size.id,quantidade:1,preco_unitario:amount,subtotal:amount});
-            const reserved=await orchestrator.reserveInTransaction({pedidoId:order.id,clientRequestId:randomUUID()},trx);
+            const reserved=await orchestrator.reserveInTransaction({pedidoId:order.id,clientRequestId:approval.attempt_reference},trx);
             await trx('pagamentos_eventos').insert({event_key:H4.command,tipo_evento:'H4_RESERVA_COMANDO_LINKS',pagamento_id:reserved.attempt.id,
                 payload_filtrado:sealObservation({request:reserved.payload,approval},captureKey),status_processamento:'PENDENTE_IDENTIFICACAO'});
             return reserved;
@@ -123,6 +127,7 @@ export function createCreditControl({db,captureKey,publicOrigin,now=()=>new Date
             if(!marker || !payment || !['AGUARDANDO','INCERTA'].includes(payment.status) || new Date(payment.valid_until)<=now())throw blocked();
             const saved=openObservation(marker.payload_filtrado,captureKey),order=await trx('pedidos').where({id:payment.pedido_id}).first();
             if(order.fluxo_pagamento!=='INFINITEPAY' || order.liberado_cozinha_em || Number(payment.valor_centavos)!==saved.approval.amount_centavos ||
+                (saved.approval.schema_version===2 && order.client_request_id!==saved.approval.attempt_reference) ||
                 Math.round(Number(order.valor_total)*100)!==saved.approval.amount_centavos || saved.request.order_nsu!==payment.order_nsu)throw blocked();
             let url=payment.checkout_url;
             if(!url){
