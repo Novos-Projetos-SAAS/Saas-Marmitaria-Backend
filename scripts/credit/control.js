@@ -4,7 +4,7 @@ import { createInfinitepayClient } from '../../src/services/infinitepayClient.js
 import { parseObservedCreatedLink } from '../../src/services/infinitepayObservedContracts.js';
 import { encryptApiKey, decryptApiKey } from '../../src/utils/infinitepayCredentials.js';
 import { aplicarElegibilidadeOperacional } from '../../src/utils/pedidoPaymentPolicy.js';
-import { validateCreationScope } from './authorization.js';
+import { validateCreationScope, validateFollowupScope } from './authorization.js';
 import { digest, sealObservation, openObservation, observeCredit, readCreditBody } from './observations.js';
 
 export const H4={origin:'h4:public-origin',command:'h4:links:command',dispatch:'h4:links:dispatch',check:'h4:check:dispatch',probe:'h4:preflight:probe'};
@@ -17,7 +17,9 @@ export function creditOrigin(value) {
 }
 export function authorizeCreditOperation(approval,operation,{publicOrigin,apiKey,now=new Date()}) {
     if(operation==='CREATE_LINK')validateCreationScope(approval,now);
-    const minimumValid=operation==='CREATE_LINK' || (Number.isSafeInteger(approval?.minimum_centavos) && approval.minimum_centavos>0 &&
+    const followup=['CHECK_PAYMENT','RECONCILE','DELIVER'].includes(operation);
+    if(followup)validateFollowupScope(approval,now);
+    const minimumValid=operation==='CREATE_LINK' || followup || (Number.isSafeInteger(approval?.minimum_centavos) && approval.minimum_centavos>0 &&
         approval.minimum_centavos<=approval.amount_centavos && typeof approval.minimum_evidence==='string' && Boolean(approval.minimum_evidence.trim()));
     if(!approval || approval.phase!=='H4_CREDIT' || approval.operation!==operation || approval.method!=='credit_card' || approval.installments!==1 ||
         !Number.isSafeInteger(approval.amount_centavos) || approval.amount_centavos<1 || !minimumValid ||

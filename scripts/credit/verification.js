@@ -6,6 +6,7 @@ import { snapshot } from '../../src/services/paymentOrchestrator.js';
 import { decryptApiKey } from '../../src/utils/infinitepayCredentials.js';
 import { H4, createCreditControl, authorizeCreditOperation, noSecret } from './control.js';
 import { openObservation, observeCredit, digest, readCreditBody } from './observations.js';
+import { assertFollowupBinding } from './authorization.js';
 
 const blocked=()=>new Error('Verificação H4 bloqueada. Preserve a tentativa e concilie sem nova cobrança.');
 export function creditProof(data,expected,amount) {
@@ -48,9 +49,14 @@ export function createCreditVerification({db,captureKey,publicOrigin,now=()=>new
             amount:Number(payment.valor_centavos),snapshot:order.client_payload_hash,expected};
         return {payment,saved,apiKey,expected,context};
     }
-    async function result() {
-        return db.transaction(async trx=>{
-            await trx.raw('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    async function evidenceFingerprint(trx=db) {
+        const rows=await trx('pagamentos_eventos').where({tipo_evento:'H4_OBSERVACAO_PAYMENT_CHECK'});
+        if(rows.length!==1)throw blocked();
+        const observed=openObservation(rows[0].payload_filtrado,captureKey);
+        return digest(JSON.stringify({context:observed.context,status:observed.status,body:observed.body}));
+    }
+    async function result(reader) {
+        const read=async trx=>{
             const observations=await trx('pagamentos_eventos').where({tipo_evento:'H4_OBSERVACAO_PAYMENT_CHECK'});
             if(observations.length!==1)return {payment_confirmed:false,observation_only:true,reason:'CHECK_NOT_AVAILABLE'};
             try{
@@ -60,13 +66,16 @@ export function createCreditVerification({db,captureKey,publicOrigin,now=()=>new
                 return {payment_confirmed:true,observation_only:true,amount:proof.amount,paid_amount:proof.paidAmount,capture_method:proof.captureMethod,
                     installments:proof.installments,identifiers_compatible:true,receipt_available:true};
             }catch{return {payment_confirmed:false,observation_only:true,reason:'EVIDENCE_INCOMPATIBLE'};}
-        });
+        };
+        if(reader)return read(reader);
+        return db.transaction(async trx=>{await trx.raw('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');return read(trx);});
     }
     async function check({apiKey,authorization,confirmed,transport}) {
         if(typeof apiKey!=='string' || !/^[\x21-\x7E]{1,4096}$/.test(apiKey))throw blocked();
         const approval=authorizeCreditOperation(authorization,'CHECK_PAYMENT',{publicOrigin,apiKey,now:now()});
         if(confirmed!==true || typeof transport!=='function')throw blocked();
         const bound=await binding();if(apiKey!==bound.apiKey || approval.amount_centavos!==Number(bound.payment.valor_centavos) || approval.handle!==bound.payment.handle_snapshot)throw blocked();
+        assertFollowupBinding(approval,bound);
         const reserved=await db.transaction(async trx=>{
             await trx.raw('SET LOCAL synchronous_commit=on');await trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?,0))',['h4:control']);
             const [row]=await trx('pagamentos_eventos').insert({event_key:H4.check,tipo_evento:'H4_RESERVA_PAYMENT_CHECK',pagamento_id:bound.payment.id,
@@ -88,6 +97,7 @@ export function createCreditVerification({db,captureKey,publicOrigin,now=()=>new
         const approval=authorizeCreditOperation(authorization,operation,{publicOrigin,now:now()});if(confirmed!==true)throw blocked();
         const bound=await binding();if(approval.amount_centavos!==Number(bound.payment.valor_centavos) || approval.handle!==bound.payment.handle_snapshot ||
             approval.credential_sha256!==digest(bound.apiKey) || !(await result()).payment_confirmed)throw blocked();
+        assertFollowupBinding(approval,bound,await evidenceFingerprint());
         return bound;
     }
     async function reconcile({authorization,confirmed}) {
@@ -114,5 +124,5 @@ export function createCreditVerification({db,captureKey,publicOrigin,now=()=>new
         await service.processEvent(rows[0].id);
         return {isolated:true,deliveries:Number((await db('infinitepay_entregas_homologacao').where({pedido_id:bound.payment.pedido_id}).count('* as n').first()).n)};
     }
-    return {binding,result,check,reconcile,deliver};
+    return {binding,result,evidenceFingerprint,check,reconcile,deliver};
 }

@@ -1,10 +1,10 @@
 #Requires -Version 7.2
-param([ValidateSet('Prepare','Status','Diagnose','AuthorizeCreateLink','Credential','Backend','Tunnel','Preflight','CreateLink','ViewCheckout','Events','CheckEvidence','CheckPayment','CheckResult','Reconcile','Deliver','StopBackend')][string]$Action='Status',[string]$PublicOrigin,[int]$AmountCentavos=0)
+param([ValidateSet('Prepare','Status','Diagnose','DiagnosePayment','AuthorizeCreateLink','AuthorizeCheckPayment','AuthorizeReconcile','AuthorizeDeliver','Credential','Backend','Tunnel','Preflight','CreateLink','ViewCheckout','Events','CheckEvidence','CheckPayment','CheckResult','Reconcile','Deliver','StopBackend')][string]$Action='Status',[string]$PublicOrigin,[int]$AmountCentavos=0)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'credit/credential.ps1')
 $privateRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../infinitepay-credit-private'))
 if(-not(Test-Path -LiteralPath $privateRoot)){
-    if($Action -in @('Diagnose','AuthorizeCreateLink')){throw 'Perfil privado H4 ausente. Nenhum arquivo criado.'}
+    if($Action -in @('Diagnose','DiagnosePayment','AuthorizeCreateLink','AuthorizeCheckPayment','AuthorizeReconcile','AuthorizeDeliver')){throw 'Perfil privado H4 ausente. Nenhum arquivo criado.'}
     New-Item -ItemType Directory -Path $privateRoot|Out-Null
     $acl=Get-Acl -LiteralPath $privateRoot;$acl.SetAccessRuleProtection($true,$false)
     foreach($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18')){
@@ -41,7 +41,7 @@ function Invoke-CreditNode([string]$Command,[switch]$GateOnly){
             $pointer=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
             $env:CREDIT_API_KEY=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
         }
-        if($Command -in @('diagnose','authorize')){
+        if($Command -in @('diagnose','authorize','diagnose-payment','authorize-check','authorize-reconcile','authorize-deliver')){
             $path=Join-Path $privateRoot 'api-key.dpapi';$env:CREDIT_DPAPI_STATUS='MISSING'
             if(Test-Path -LiteralPath $path){
                 try{
@@ -75,8 +75,9 @@ function Invoke-CreditNode([string]$Command,[switch]$GateOnly){
                 }catch{}
                 [Environment]::SetEnvironmentVariable(('CREDIT_'+$component.ToUpperInvariant()+'_STATUS'),$state,'Process')
             }
-            $entry=if($Command -eq 'diagnose'){'credit/diagnose.js'}else{'credit/authorize.js'}
-            & $node (Join-Path $PSScriptRoot $entry)
+            $followup=@{'diagnose-payment'='diagnose';'authorize-check'='CHECK_PAYMENT';'authorize-reconcile'='RECONCILE';'authorize-deliver'='DELIVER'}[$Command]
+            if($followup){& $node (Join-Path $PSScriptRoot 'credit/followup.js') $followup}
+            else{$entry=if($Command -eq 'diagnose'){'credit/diagnose.js'}else{'credit/authorize.js'};& $node (Join-Path $PSScriptRoot $entry)}
         }elseif($GateOnly){& $node $nodeScript $Command --gate-only}else{& $node $nodeScript $Command}
         if($LASTEXITCODE -ne 0){throw 'H4 bloqueada; nenhuma retentativa automática será feita.'}
     }finally{
@@ -86,6 +87,12 @@ function Invoke-CreditNode([string]$Command,[switch]$GateOnly){
     }
 }
 if($Action -eq 'Diagnose'){Invoke-CreditNode 'diagnose';return}
+if($Action -eq 'DiagnosePayment'){Invoke-CreditNode 'diagnose-payment';return}
+$followupAction=@{AuthorizeCheckPayment='authorize-check';AuthorizeReconcile='authorize-reconcile';AuthorizeDeliver='authorize-deliver'}[$Action]
+if($followupAction){
+    if($AmountCentavos -ne 100){throw 'Autorização exclusiva da tentativa H4 existente de 100 centavos.'}
+    Invoke-CreditNode $followupAction;return
+}
 if($Action -eq 'AuthorizeCreateLink'){
     if($AmountCentavos -ne 100){throw 'Esta autorização H4 é exclusiva para BRL 100 centavos; nenhum valor alternativo.'}
     Invoke-CreditNode 'authorize';return

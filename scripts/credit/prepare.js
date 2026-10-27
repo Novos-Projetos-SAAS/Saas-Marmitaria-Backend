@@ -11,6 +11,7 @@ import { createCreditVerification } from './verification.js';
 import { observeCredit, observationHeaders, digest } from './observations.js';
 import { verifyCreditEndpoints } from './preflight.js';
 import { confirmCreditOperation } from './terminal.js';
+import { readPrivateApproval } from './authorization.js';
 
 const profile=await loadCreditProfile();
 const action=process.argv[2],operation={create:'CREATE_LINK',check:'CHECK_PAYMENT',reconcile:'RECONCILE',deliver:'DELIVER'}[action];
@@ -45,8 +46,7 @@ try {
     const publicOrigin=endpoints?.origin;
     const captureKey=Buffer.from(profile.encryptionKey,'base64');
     const control=publicOrigin && createCreditControl({db,captureKey,publicOrigin});
-    const approvalFile=operation && join(privateDirectory,'approval-'+operation+'.json');
-    const loadApproval=async()=>JSON.parse((await readFile(approvalFile,'utf8')).replace(/^\uFEFF/,''));
+    const loadApproval=()=>readPrivateApproval(privateDirectory,operation);
     if(operation){
         if(!control)throw new Error();
         const approval=authorizeCreditOperation(await loadApproval(),operation,{publicOrigin,...(process.argv.includes('--gate-only')?{}:{apiKey:operation==='CREATE_LINK'||operation==='CHECK_PAYMENT'?apiKey:undefined})});
@@ -105,5 +105,8 @@ try {
             synthetic_preflight_attempts:Number((await db('pagamentos_eventos').where({tipo_evento:'H4_PRETESTE'}).count('* as n').first()).n),
             public_origin:publicOrigin??null,...(control?await control.status():{})}));
     } else throw new Error();
-} catch {console.error('Crédito indisponível: confira perfil, identidade do banco, migrations e HTTPS exclusivo. Nenhuma operação financeira autorizada.');process.exitCode=1;}
+} catch(error) {
+    console.error(error.code==='H4_APPROVAL_MISSING'?operation+': autorização privada ausente. Registro interativo separado: '+error.registrationAction+'. Nenhuma operação executada.':
+        'Crédito indisponível: confira perfil, identidade do banco, migrations e HTTPS exclusivo. Nenhuma operação financeira autorizada.');process.exitCode=1;
+}
 finally {if(!server?.listening)await db.destroy();}

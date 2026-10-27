@@ -1,4 +1,13 @@
 import { createInterface } from 'node:readline/promises';
+export async function confirmFollowupAuthorization({operation,publicOrigin,input=process.stdin,output=process.stdout}) {
+    if(!input.isTTY || !output.isTTY || !['CHECK_PAYMENT','RECONCILE','DELIVER'].includes(operation))throw new Error('Autorização interativa específica obrigatória.');
+    const terminal=createInterface({input,output,terminal:false}),phrase='AUTORIZO H4 '+operation+' BRL 100 TENTATIVA EXISTENTE';
+    try{
+        output.write('Registrar '+operation+' para a única tentativa H4 existente de 100 centavos. Validade: 15 minutos. HTTPS preservado: '+publicOrigin+'\n'+
+            'Este registro não consulta o provedor, não reconcilia, não entrega e não cria checkout. Outras operações exigem autorizações próprias.\n');
+        return await terminal.question('Digite exatamente '+phrase+': ')===phrase;
+    }finally{terminal.close();}
+}
 export async function confirmCreditAuthorization({publicOrigin,input=process.stdin,output=process.stdout}) {
     if(!input.isTTY || !output.isTTY)throw new Error('Autorização interativa obrigatória.');
     const terminal=createInterface({input,output,terminal:false});
