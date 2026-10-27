@@ -142,7 +142,10 @@ $credit = '<caminho do Backend>/scripts/infinitepay-credit.ps1'
 & $credit -Action Backend # somente callbacks; imprime PID próprio
 & $credit -Action Preflight # HTTP/HTTPS, proxy, deduplicação e retorno sintéticos; nenhuma API financeira
 & $credit -Action Credential # opcional: entrada protegida pelo operador, sem enviar pelo chat
+& $credit -Action Diagnose # somente leitura: requisitos, DPAPI, processos, banco e GETs HTTPS sem eventos
 ```
+
+`Diagnose` distingue APROVADO, BLOQUEADO, AGUARDANDO AUTORIZAÇÃO e NÃO VERIFICADO. Confere a leitura DPAPI pelo operador sem enviar a chave ao Node; somente seu fingerprint transitório é usado para comparar uma autorização já existente. O PostgreSQL usa sessão/transação somente leitura e o HTTPS recebe apenas GETs sem parâmetros, sem criar eventos. `AUTHORIZATION_FILE_MISSING` identifica a ausência da autorização específica antes de qualquer reserva ou envio; variar o valor não resolve esse bloqueio. O diagnóstico não cria autorizações nem substitui o pré-teste sintético de POST/deduplicação. Conta/permissões da API Key e mínimo não comprovado permanecem explicitamente não verificados.
 
 O executável portátil oficial `cloudflared.exe` fica no perfil Crédito; obtenha pelo [download oficial](https://developers.cloudflare.com/tunnel/downloads/) e confira o SHA256 do release se for necessário reinstalá-lo. Quick Tunnel é temporário, sem garantia de disponibilidade contínua: sua origem vale enquanto esse processo e a conexão permanecerem ativos. PID, início, caminho e comando são conferidos antes de reutilizar os processos; `StopBackend` encerra somente o Backend identificado, preservando túnel, PostgreSQL e registros. Não reutilizar H1. A origem é fixada no banco e qualquer troca fica bloqueada após a reserva real, inclusive depois de timeout. Se o túnel cair durante uma tentativa ativa, interromper o teste e conciliar; não gerar outra cobrança, trocar callbacks ou apagar a reserva. Antes da primeira reserva, `Tunnel` pode descobrir uma nova origem efetiva e `Backend`/`Preflight` precisam ser executados novamente. Não há URL fixa inventada ou versionada.
 

@@ -1,8 +1,10 @@
 #Requires -Version 7.2
-param([ValidateSet('Prepare','Status','Credential','Backend','Tunnel','Preflight','CreateLink','ViewCheckout','Events','CheckEvidence','CheckPayment','CheckResult','Reconcile','Deliver','StopBackend')][string]$Action='Status',[string]$PublicOrigin,[int]$AmountCentavos=0)
+param([ValidateSet('Prepare','Status','Diagnose','Credential','Backend','Tunnel','Preflight','CreateLink','ViewCheckout','Events','CheckEvidence','CheckPayment','CheckResult','Reconcile','Deliver','StopBackend')][string]$Action='Status',[string]$PublicOrigin,[int]$AmountCentavos=0)
 $ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'credit/credential.ps1')
 $privateRoot=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../../infinitepay-credit-private'))
 if(-not(Test-Path -LiteralPath $privateRoot)){
+    if($Action -eq 'Diagnose'){throw 'Perfil privado H4 ausente. Diagnóstico somente de leitura: nenhum arquivo criado.'}
     New-Item -ItemType Directory -Path $privateRoot|Out-Null
     $acl=Get-Acl -LiteralPath $privateRoot;$acl.SetAccessRuleProtection($true,$false)
     foreach($sid in @([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18')){
@@ -27,18 +29,54 @@ function Read-Owned([string]$File,[string]$Executable,[string]$Needle){
 }
 function Invoke-CreditNode([string]$Command,[switch]$GateOnly){
     $names=@('NODE_ENV','INFINITEPAY_CHECKOUT_ENABLED','DATABASE_URL','TEST_DATABASE_URL','PGHOST','PGPORT','PGDATABASE','PGUSER','PGPASSWORD','PGOPTIONS',
-        'INFINITEPAY_ENCRYPTION_KEYS','INFINITEPAY_ENCRYPTION_KEY','INFINITEPAY_ENCRYPTION_KEY_VERSION','NODE_OPTIONS','NODE_DEBUG','NODE_DEBUG_NATIVE','DEBUG','CREDIT_API_KEY','CREDIT_AMOUNT_CENTAVOS')
+        'INFINITEPAY_ENCRYPTION_KEYS','INFINITEPAY_ENCRYPTION_KEY','INFINITEPAY_ENCRYPTION_KEY_VERSION','NODE_OPTIONS','NODE_DEBUG','NODE_DEBUG_NATIVE','DEBUG','CREDIT_API_KEY','CREDIT_AMOUNT_CENTAVOS',
+        'CREDIT_DPAPI_STATUS','CREDIT_CREDENTIAL_SHA256','CREDIT_BACKEND_STATUS','CREDIT_TUNNEL_STATUS')
     $previous=@{};$pointer=[IntPtr]::Zero;$secureKey=$null
     try{
         foreach($name in $names){$previous[$name]=[Environment]::GetEnvironmentVariable($name,'Process');[Environment]::SetEnvironmentVariable($name,$null,'Process')}
         $env:NODE_ENV='development';$env:INFINITEPAY_CHECKOUT_ENABLED='false';$env:CREDIT_AMOUNT_CENTAVOS=[string]$AmountCentavos
         if($Command -in @('create','check') -and -not $GateOnly){
             $path=Join-Path $privateRoot 'api-key.dpapi';if(-not(Test-Path -LiteralPath $path)){throw 'Configure a credencial por Credential, sem enviar pelo chat.'}
-            $secureKey=Get-Content -LiteralPath $path -Raw|ConvertTo-SecureString
+            $secureKey=Read-CreditCredential $path
             $pointer=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
             $env:CREDIT_API_KEY=[Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
         }
-        if($GateOnly){& $node $nodeScript $Command --gate-only}else{& $node $nodeScript $Command}
+        if($Command -eq 'diagnose'){
+            $path=Join-Path $privateRoot 'api-key.dpapi';$env:CREDIT_DPAPI_STATUS='MISSING'
+            if(Test-Path -LiteralPath $path){
+                try{
+                    $secureKey=Read-CreditCredential $path
+                    $pointer=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
+                    $keyBytes=[Text.Encoding]::UTF8.GetBytes([Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer))
+                    try{
+                        if(-not $keyBytes.Length -or $keyBytes.Length -gt 4096 -or @($keyBytes|Where-Object {$_ -lt 33 -or $_ -gt 126}).Count){throw 'Formato da credencial inválido.'}
+                        $env:CREDIT_CREDENTIAL_SHA256=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($keyBytes)).ToLowerInvariant()
+                        $env:CREDIT_DPAPI_STATUS='VALID'
+                    }finally{[Array]::Clear($keyBytes,0,$keyBytes.Length)}
+                }catch{$env:CREDIT_DPAPI_STATUS='INVALID';$env:CREDIT_CREDENTIAL_SHA256=$null}
+            }
+            foreach($component in @('backend','tunnel')){
+                $state='INVALID'
+                try{
+                    $executable=if($component -eq 'backend'){$node}else{Join-Path $privateRoot 'cloudflared.exe'}
+                    $needle=if($component -eq 'backend'){$nodeScript}else{'127.0.0.1:55447'}
+                    $owned=Read-Owned ($component+'-process.json') $executable $needle
+                    if($owned){
+                        if($component -eq 'backend'){
+                            $listeners=@(Get-NetTCPConnection -State Listen -LocalPort 55447 -ErrorAction SilentlyContinue)
+                            if($listeners.Count -ne 1 -or $listeners[0].LocalAddress -ne '127.0.0.1' -or $listeners[0].OwningProcess -ne $owned.Id){throw 'Listener divergente.'}
+                            $record=Get-Content -LiteralPath (Join-Path $privateRoot 'backend-process.json') -Raw|ConvertFrom-Json
+                        }else{$record=Get-Content -LiteralPath (Join-Path $privateRoot 'tunnel-process.json') -Raw|ConvertFrom-Json}
+                        $endpoints=Get-Content -LiteralPath (Join-Path $privateRoot 'endpoints.json') -Raw|ConvertFrom-Json
+                        if($component -eq 'backend' -and $record.publicOrigin -ne $endpoints.origin){throw 'Origem divergente.'}
+                        if($component -eq 'tunnel' -and ($endpoints.pid -ne $owned.Id -or $endpoints.executable -ne $executable -or ([datetime]$endpoints.started).ToUniversalTime().Ticks -ne $owned.StartTime.ToUniversalTime().Ticks)){throw 'Túnel divergente.'}
+                        $state='VALID'
+                    }
+                }catch{}
+                [Environment]::SetEnvironmentVariable(('CREDIT_'+$component.ToUpperInvariant()+'_STATUS'),$state,'Process')
+            }
+            & $node (Join-Path $PSScriptRoot 'credit/diagnose.js')
+        }elseif($GateOnly){& $node $nodeScript $Command --gate-only}else{& $node $nodeScript $Command}
         if($LASTEXITCODE -ne 0){throw 'H4 bloqueada; nenhuma retentativa automática será feita.'}
     }finally{
         if($pointer -ne [IntPtr]::Zero){[Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)}
@@ -46,6 +84,7 @@ function Invoke-CreditNode([string]$Command,[switch]$GateOnly){
         foreach($name in $names){[Environment]::SetEnvironmentVariable($name,$previous[$name],'Process')}
     }
 }
+if($Action -eq 'Diagnose'){Invoke-CreditNode 'diagnose';return}
 if(-not(Test-Path -LiteralPath $profilePath)){
     @{purpose='INFINITEPAY_CREDIT_PREPARATION_ONLY';host='127.0.0.1';port=55439;database='infinitepay_credit_homologacao';user='codex_test';checkoutEnabled=$false;
         encryptionKey=[Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))}|ConvertTo-Json|Set-Content -LiteralPath $profilePath -Encoding utf8
