@@ -163,16 +163,26 @@ describe('approved real payment identity map on synthetic PostgreSQL data', { co
         try {
             await migrateBaseline(historical.db);
             await historical.db('metodos_pagamento').insert(approved.map(({ id, nome }) => ({ id, nome, ativo: true })));
+            const [size]=await historical.db('tamanhos_marmitas').insert({nome:'SYNTHETIC HISTORICAL',preco_base:20}).returning('*');
+            const [order]=await historical.db('pedidos').insert({nome_cliente:'SYNTHETIC',telefone_cliente:'00000000000',tipo_pedido:'Remoto',
+                metodo_entrega:'Retirada',metodo_pagamento_id:2,status:'Entregue',valor_total:20}).returning('*');
+            const [item]=await historical.db('itens_pedido').insert({pedido_id:order.id,tamanho_marmita_id:size.id,quantidade:1,preco_unitario:20,subtotal:20}).returning('*');
             const applied = await historical.db.migrate.latest();
-            assert.equal(applied[1].length, 11);
-            assert.deepEqual(applied[1].slice(-7), [migrationName, '20261024000100_checkout_sessoes.js', '20261025000100_relatorios_financeiros.js',
+            assert.equal(applied[1].length, 12);
+            assert.deepEqual(applied[1].slice(-8), [migrationName, '20261024000100_checkout_sessoes.js', '20261025000100_relatorios_financeiros.js',
                 '20261025000200_infinitepay_ativacao_controlada.js','20261027000100_entregas_operacionais.js','20261027000200_infinitepay_identidade_ambiente.js',
-                '20261027000300_autorizacoes_producao.js']);
+                '20261027000300_autorizacoes_producao.js','20261028000100_controles_administrativos.js']);
             const rows = await historical.db('metodos_pagamento').orderBy('id');
             assert.deepEqual(rows.map(({ id, nome, codigo, tipo_financeiro }) => ({ id, nome, codigo, tipo_financeiro })), approved);
             assert.equal((await historical.db('config_infinitepay').first()).ativo, false);
             assert.equal((await historical.db('infinitepay_identidade_ambiente').first()).ambiente,'NAO_CONFIGURADO');
             assert.equal(Number((await historical.db('infinitepay_entregas_operacionais').count('* as n').first()).n),0);
+            for(const [table,before] of [['pedidos',order],['itens_pedido',item]]) {
+                const after=await historical.db(table).where({id:before.id}).first();
+                assert.deepEqual(Object.fromEntries(Object.keys(before).map(key=>[key,after[key]])),before);
+            }
+            assert.equal(Number((await historical.db('infinitepay_controle_producao').count('* as n').first()).n),0);
+            assert.equal(Number((await historical.db('infinitepay_sessoes_revogadas').count('* as n').first()).n),0);
         } finally { await historical.close(); }
     });
     test('official Knex up rejects identity drift without recording the migration or partially changing classifications', async () => {

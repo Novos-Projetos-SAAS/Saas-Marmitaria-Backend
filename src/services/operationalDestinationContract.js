@@ -27,3 +27,12 @@ export function normalizeOperationalEnvelope(value) {
         value.outboxId!==normalized.outboxId || value.payload.pedidoId!==normalized.payload.pedidoId)invalid();
     return normalized;
 }
+export function prepareOperationalRecipientContract(proposal,expectedStationId) {
+    exact(proposal,['stationId','authentication','receiptRetentionSeconds','maxRecoverySeconds','employeePermission','reprintPermission']);
+    const {stationId,authentication,receiptRetentionSeconds,maxRecoverySeconds,employeePermission,reprintPermission}=proposal;
+    if(typeof stationId!=='string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$/.test(stationId) || stationId!==expectedStationId ||
+        authentication!=='AUTHENTICATED_RECEIPTS_REQUIRED' || !Number.isSafeInteger(receiptRetentionSeconds) || !Number.isSafeInteger(maxRecoverySeconds) ||
+        maxRecoverySeconds<1 || receiptRetentionSeconds<maxRecoverySeconds ||
+        [employeePermission,reprintPermission].some(value=>typeof value!=='string' || !/^[a-z][a-z0-9_.]{1,79}$/.test(value)))invalid();
+    return Object.freeze({...proposal,proposalOnly:true,reprintRequiresAudit:true,physicalPrintingProven:false});
+}

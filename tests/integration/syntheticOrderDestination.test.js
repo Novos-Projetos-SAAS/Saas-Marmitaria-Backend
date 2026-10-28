@@ -123,4 +123,17 @@ test('synthetic adapter rejects certified, persistent demo and remote connection
     const fake=()=>{};fake.client={config:{connection:{host:'127.0.0.1',database:'infinitepay_phase1_test'},searchPath:['infinitepay_demo']}};
     fake.raw=async()=>{calls++;};await assert.rejects(create({db:fake,secret}));assert.equal(calls,0);
 });
+test('independent synthetic recipients deduplicate against persistent storage and retain the same receipt',async()=>{
+    const dto=await order(),second=await create({db,secret});
+    const [one,two]=await Promise.all([adapter.send(dto),second.send(dto)]);
+    assert.equal(one.receiptId,two.receiptId);assert.equal(await second.verifyReceipt(one,dto),true);
+    assert.equal(Number((await db('infinitepay_destino_sintetico').count('* as n').first()).n),1);
+    const restarted=await create({db,secret});assert.equal((await restarted.lookupReceipt(dto)).receiptId,one.receiptId);
+});
+test('a different station or authentication key cannot claim an existing receipt',async()=>{
+    const dto=await order(),receipt=await adapter.send(dto),wrongStation=await create({db,secret,id:'wrong-station'});
+    assert.equal(await wrongStation.verifyReceipt(receipt,dto),false);await assert.rejects(wrongStation.send(dto));
+    const wrongKey=await create({db,secret:randomBytes(32)});assert.equal(await wrongKey.verifyReceipt(receipt,dto),false);
+    assert.equal(Number((await db('infinitepay_destino_sintetico').count('* as n').first()).n),1);
+});
 });

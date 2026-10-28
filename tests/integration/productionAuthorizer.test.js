@@ -9,6 +9,7 @@ import {encryptApiKey} from '../../src/utils/infinitepayCredentials.js';
 import express from 'express';
 import {initializeInfinitepayApplication,validateInfinitepayEnvironment} from '../../src/infinitepayApplication.js';
 import {configureProductionProxy} from '../../src/config/infinitepayProduction.js';
+import {spawn} from 'node:child_process';
 
 describe('production capability authorization with synthetic identities',{concurrency:false},()=>{
 let f,db,env,clock,secret,session,actor,credential,make,oldKey;
@@ -195,7 +196,7 @@ test('audit failure during revocation or emergency stop still denies this proces
     await db.raw("CREATE FUNCTION synthetic_stop_audit_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'SYNTHETIC'; END $$");
     await db.raw('CREATE TRIGGER synthetic_stop_audit_failure BEFORE INSERT ON infinitepay_autorizacao_decisoes FOR EACH ROW EXECUTE FUNCTION synthetic_stop_audit_failure()');
     await assert.rejects(a.revoke({session,id:grant.id}));assert.equal(await a.authorize(context('WORKER')),false);
-    assert.equal((await db('infinitepay_autorizacoes_producao').where({id:grant.id}).first()).revogado_em,null);
+    assert.notEqual((await db('infinitepay_autorizacoes_producao').where({id:grant.id}).first()).revogado_em,null);
     await assert.rejects(a.emergencyStop({session}));await assert.rejects(approve(a));
     assert.equal(await authorizer().authorize(context('WORKER')),false);
 });
@@ -223,5 +224,133 @@ test('revocation during an in-flight simulated check preserves its result but bl
         assert.deepEqual(await service.runtime.processPending(),{events:0,deliveries:0,errors:0});assert.equal(dispatches,1);
         assert.equal(service.status().consumer,'unconfigured');
     }finally{release?.();await service?.stop();}
+});
+test('durable stop reaches independent instances and survives reconstruction until supervised recovery',async()=>{
+    const a=authorizer(),b=authorizer();await approve(a);await approve(b);
+    assert.equal(await b.authorize(context('WORKER')),true);await a.emergencyStop({session});
+    assert.equal(await b.authorize(context('WORKER')),false);assert.equal((await b.status({session})).halted,true);
+    const fresh=authorizer();await assert.rejects(approve(fresh));const state=await fresh.status({session});
+    await fresh.recover({session,expectedGeneration:state.generation,confirmation:'RECUPERAR SEM ATIVAR CAPACIDADES'});
+    assert.equal(await a.authorize(context('WORKER')),false);assert.equal(await b.authorize(context('WORKER')),false);
+    await approve(fresh);assert.equal(await fresh.authorize(context('WORKER')),true);
+    assert.equal(await b.authorize(context('WORKER')),false);await assert.rejects(approve(a));
+});
+test('another instance revokes an approval and concurrently repeated recovery cannot clear a newer stop',async()=>{
+    const a=authorizer(),b=authorizer(),grant=await approve(a);assert.equal(await b.revoke({session,id:grant.id}),true);
+    assert.equal(await a.authorize(context('WORKER')),false);await a.emergencyStop({session});
+    const request={session,expectedGeneration:(await b.status({session})).generation,confirmation:'RECUPERAR SEM ATIVAR CAPACIDADES'};
+    const results=await Promise.allSettled([b.recover(request),b.recover(request)]);
+    assert.equal(results.filter(value=>value.status==='fulfilled').length,1);
+    await b.emergencyStop({session});await assert.rejects(authorizer().recover(request));
+});
+test('ending an administrative session invalidates all its grants across instances without deleting history',async()=>{
+    const a=authorizer(),b=authorizer();await approve(a);await approve(b);await a.endSession({session});
+    for(const service of [a,b,authorizer()]) {
+        assert.equal(await service.authorize(context('WORKER')),false);await assert.rejects(service.csrf({session}));
+    }
+    assert.equal(Number((await db('infinitepay_autorizacoes_producao').whereNotNull('revogado_em').count('* as n').first()).n),2);
+    clock=new Date(clock.getTime()+1000);const seconds=clock.getTime()/1000,token=jwt.sign({id:actor.id,iat:seconds,exp:seconds+60},secret);
+    const next={token,origin:session.origin,csrf:createHmac('sha256',secret).update('infinitepay-csrf-v1\0'+token).digest('base64url')};
+    const fresh=authorizer();await fresh.approve({session:next,capabilities:['WORKER']});assert.equal(await fresh.authorize(context('WORKER')),true);
+});
+test('inactive level and changed permissions invalidate both bootstrap and existing grants',async()=>{
+    const a=authorizer();await approve(a);await db('niveis_acesso').where({id:actor.nivel_acesso_id}).update({ativo:false});
+    assert.equal(await a.authorize(context('WORKER')),false);await assert.rejects(a.csrf({session}));
+    await db('niveis_acesso').where({id:actor.nivel_acesso_id}).update({ativo:true});await db('permissoes_usuarios').where({usuario_id:actor.id}).del();
+    assert.equal(await a.authorize(context('WORKER')),false);await assert.rejects(a.csrf({session}));
+});
+test('control storage failure denies decisions and never falls back to a cached approval',async()=>{
+    const a=authorizer();await approve(a);assert.equal(await a.authorize(context('WORKER')),true);
+    const fail=query=>{if(query.sql.includes('infinitepay_controle_producao'))throw new Error('SYNTHETIC_CONTROL_UNAVAILABLE');};
+    db.on('query',fail);try{assert.equal(await a.authorize(context('WORKER')),false);await assert.rejects(approve(a));}
+    finally{db.removeListener('query',fail);}
+});
+test('session expiry while waiting for the installation lock cannot authorize a revocation',async()=>{
+    const a=authorizer(),grant=await approve(a);
+    const expire=query=>{if(query.sql.includes('pg_advisory_xact_lock('))clock=new Date('2026-10-28T13:00:01Z');};
+    db.on('query',expire);try{await assert.rejects(a.revoke({session,id:grant.id}));}finally{db.removeListener('query',expire);}
+    assert.equal((await db('infinitepay_autorizacoes_producao').where({id:grant.id}).first()).revogado_em,null);
+});
+test('control migration is additive, initially empty, constrained and forward-only',async()=>{
+    assert.equal(Number((await db('infinitepay_controle_producao').count('* as n').first()).n),0);
+    assert.equal(Number((await db('infinitepay_sessoes_revogadas').count('* as n').first()).n),0);
+    await assert.rejects(db('infinitepay_controle_producao').insert({implantacao_id:env.INFINITEPAY_DATABASE_ID,geracao:-1}));
+    const migration=await import('../../src/database/migrations/20261028000100_controles_administrativos.js');
+    await assert.rejects(migration.down(db),/forward-only/);
+    assert.equal((await db('config_infinitepay').first()).ativo,false);
+});
+test('audit-only failure cannot roll back a stop observed by another instance or a fresh boot',async()=>{
+    const a=authorizer(),b=authorizer();await approve(a);await approve(b);
+    await db.raw("CREATE FUNCTION synthetic_reject_control_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'SYNTHETIC'; END $$");
+    await db.raw('CREATE TRIGGER synthetic_reject_control_audit BEFORE INSERT ON infinitepay_controle_acoes FOR EACH ROW EXECUTE FUNCTION synthetic_reject_control_audit()');
+    await assert.rejects(a.emergencyStop({session}));assert.equal(await b.authorize(context('WORKER')),false);
+    await assert.rejects(approve(authorizer()));const state=await b.status({session});assert.equal(state.halted,true);assert.equal(state.auditPending,true);
+    const request={session,expectedGeneration:state.generation,confirmation:'RECUPERAR SEM ATIVAR CAPACIDADES'};
+    await assert.rejects(b.recover(request));assert.equal((await b.status({session})).halted,true);
+    await db.raw('DROP TRIGGER synthetic_reject_control_audit ON infinitepay_controle_acoes');
+    await b.recover(request);assert.equal(await b.authorize(context('WORKER')),false);
+    assert.equal((await b.status({session})).auditPending,false);
+});
+test('audit-only failure preserves session termination and grant revocation across instances',async()=>{
+    const a=authorizer(),b=authorizer(),grant=await approve(a);await approve(b);
+    await db.raw("CREATE FUNCTION synthetic_reject_end_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'SYNTHETIC'; END $$");
+    await db.raw('CREATE TRIGGER synthetic_reject_end_audit BEFORE INSERT ON infinitepay_controle_acoes FOR EACH ROW EXECUTE FUNCTION synthetic_reject_end_audit()');
+    await assert.rejects(a.endSession({session}));assert.equal(await b.authorize(context('WORKER')),false);
+    await assert.rejects(authorizer().csrf({session}));assert.equal((await db('infinitepay_sessoes_revogadas').first()).auditoria_pendente,true);
+    assert.notEqual((await db('infinitepay_autorizacoes_producao').where({id:grant.id}).first()).revogado_em,null);
+});
+test('failed secondary revocation audit cannot leave the grant usable in its original instance',async()=>{
+    const a=authorizer(),b=authorizer(),grant=await approve(a);
+    await db.raw("CREATE FUNCTION synthetic_reject_revoke_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.operacao='REVOKE' THEN RAISE EXCEPTION 'SYNTHETIC'; END IF; RETURN NEW; END $$");
+    await db.raw('CREATE TRIGGER synthetic_reject_revoke_audit BEFORE INSERT ON infinitepay_autorizacao_decisoes FOR EACH ROW EXECUTE FUNCTION synthetic_reject_revoke_audit()');
+    await assert.rejects(b.revoke({session,id:grant.id}));assert.equal(await a.authorize(context('WORKER')),false);
+    assert.equal((await db('infinitepay_autorizacoes_producao').where({id:grant.id}).first()).revogacao_auditoria_pendente,true);
+});
+test('failure of the legacy stop audit alone cannot restore capabilities in another process instance',async()=>{
+    const a=authorizer(),b=authorizer();await approve(a);await approve(b);
+    await db.raw("CREATE FUNCTION synthetic_reject_legacy_stop_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.operacao='EMERGENCY_STOP' THEN RAISE EXCEPTION 'SYNTHETIC'; END IF; RETURN NEW; END $$");
+    await db.raw('CREATE TRIGGER synthetic_reject_legacy_stop_audit BEFORE INSERT ON infinitepay_autorizacao_decisoes FOR EACH ROW EXECUTE FUNCTION synthetic_reject_legacy_stop_audit()');
+    await assert.rejects(a.emergencyStop({session}));assert.equal(await b.authorize(context('WORKER')),false);
+    assert.equal((await b.status({session})).auditPending,true);await assert.rejects(approve(authorizer()));
+});
+test('a repeated stop invalidates old recovery and preserves every pending stop for audited review',async()=>{
+    const a=authorizer(),b=authorizer();await approve(a);
+    await db.raw("CREATE FUNCTION synthetic_reject_repeated_stop_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'SYNTHETIC'; END $$");
+    await db.raw('CREATE TRIGGER synthetic_reject_repeated_stop_audit BEFORE INSERT ON infinitepay_controle_acoes FOR EACH ROW EXECUTE FUNCTION synthetic_reject_repeated_stop_audit()');
+    await assert.rejects(a.emergencyStop({session}));const before=await b.status({session});clock=new Date(clock.getTime()+1000);
+    await assert.rejects(b.emergencyStop({session}));const after=await b.status({session});assert.notEqual(after.generation,before.generation);
+    const fresh=authorizer(),request={session,expectedGeneration:before.generation,confirmation:'RECUPERAR SEM ATIVAR CAPACIDADES'};
+    await assert.rejects(fresh.recover(request));const stops=await db('infinitepay_paradas_producao').orderBy('geracao');
+    assert.equal(stops.length,2);assert.notEqual(stops[0].criado_em.getTime(),stops[1].criado_em.getTime());
+    assert.equal(stops.every(row=>row.auditoria_pendente),true);
+    await db.raw('DROP TRIGGER synthetic_reject_repeated_stop_audit ON infinitepay_controle_acoes');
+    await fresh.recover({...request,expectedGeneration:after.generation});
+    assert.equal((await db('infinitepay_paradas_producao').where({auditoria_pendente:true})).length,0);
+    assert.equal((await db('infinitepay_controle_acoes').where({acao:'STOP'})).length,2);
+});
+test('a separate Node process observes the durable stop without IPC carrying the stop decision',async()=>{
+    const a=authorizer(),moduleUrl=new URL('../../src/services/productionAuthorizer.js',import.meta.url).href;
+    const helperUrl=new URL('../helpers/testDatabase.js',import.meta.url).href;
+    const source=`import knex from 'knex';import {createProductionAuthorizer} from ${JSON.stringify(moduleUrl)};
+        import {testConnection} from ${JSON.stringify(helperUrl)};
+        let input='';for await(const chunk of process.stdin)input+=chunk;const data=JSON.parse(input);
+        if(!Array.isArray(data.schema)||data.schema.length!==1||!/^iptest_[a-f0-9]{32}$/.test(data.schema[0]))throw new Error('Synthetic scope required');
+        const db=knex({client:'pg',connection:testConnection(),searchPath:data.schema,pool:{min:0,max:2}});
+        const service=createProductionAuthorizer({db,env:data.env,now:()=>new Date(data.clock),sessionSecret:()=>data.secret});
+        await service.approve({session:data.session,capabilities:['WORKER']});
+        process.on('message',async action=>{if(action==='observe')process.send({authorized:await service.authorize(data.context)});});
+        process.send({authorized:await service.authorize(data.context)});`;
+    const child=spawn(process.execPath,['--input-type=module','-e',source],{windowsHide:true,stdio:['pipe','ignore','ignore','ipc']});
+    const exited=new Promise(resolve=>child.once('exit',resolve));
+    function response() {return new Promise((resolve,reject)=>{
+        const cleanup=()=>{clearTimeout(timer);child.removeListener('message',message);child.removeListener('error',fail);child.removeListener('exit',fail);};
+        const message=value=>{cleanup();resolve(value);},fail=()=>{cleanup();reject(new Error('Processo sintético indisponível.'));};
+        const timer=setTimeout(fail,15000);child.once('message',message);child.once('error',fail);child.once('exit',fail);
+    });}
+    try {
+        const first=response();child.stdin.end(JSON.stringify({schema:db.client.config.searchPath,env,clock,secret,session,context:context('WORKER')}));
+        assert.equal((await first).authorized,true);await a.emergencyStop({session});
+        const second=response();child.send('observe');assert.equal((await second).authorized,false);
+    }finally{if(child.exitCode===null && child.signalCode===null){child.kill('SIGTERM');await exited;}}
 });
 });
