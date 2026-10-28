@@ -12,7 +12,7 @@ function httpsOrigin(value) {
 }
 export function validateProductionEnvironment(env) {
     try {
-        if(env.NODE_ENV!=='production' || env.INFINITEPAY_DEMO ||
+        if(env.NODE_ENV!=='production' || env.INFINITEPAY_MODE!=='production' || env.INFINITEPAY_DEMO ||
             !/^[a-z][a-z0-9_]{0,62}$/.test(env.INFINITEPAY_DATABASE_NAME || '') ||
             /(?:_homologacao|_demo)$/.test(env.INFINITEPAY_DATABASE_NAME) ||
             !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(env.INFINITEPAY_DATABASE_ID || '')) fail();
@@ -41,6 +41,7 @@ export function validateProductionEnvironment(env) {
 export async function assertProductionDatabase(db,config) {
     try {
         const connection=db.client.config.connection;
+        if(db.client.config.searchPath?.includes('infinitepay_demo'))fail();
         let {host,database,port=5432}=connection || {};
         if(connection?.connectionString) {
             const url=new URL(connection.connectionString);
@@ -49,8 +50,8 @@ export async function assertProductionDatabase(db,config) {
         }
         if(host!==config.host || database!==config.database || Number(port)!==config.port ||
             (!local(host) && (!connection.ssl || connection.ssl===true || connection.ssl.rejectUnauthorized!==true))) fail();
-        const actual=(await db.raw('SELECT current_database() AS name')).rows[0];
-        if(actual.name!==config.database) fail();
+        const actual=(await db.raw('SELECT current_database() AS name,current_schema() AS schema')).rows[0];
+        if(actual.name!==config.database || actual.schema==='infinitepay_demo') fail();
         const marker=await db('infinitepay_identidade_ambiente').where({id:1}).first();
         if(marker?.ambiente!=='PRODUCAO' || marker.identidade!==config.databaseId) fail();
     } catch { throw productionBlocked(); }

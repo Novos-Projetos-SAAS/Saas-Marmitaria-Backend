@@ -51,3 +51,18 @@ Responsáveis: administrador da infraestrutura, responsável pela loja/impressã
 Os testes de roundtrip do cadastro nesta Fase 1.2 comprovam persistência das configurações de impressão no Backend. **Não comprovam impressão física, confiança de certificado ou segurança do assinador.** Todos os testes operacionais acima continuam pendentes.
 
 Fonte oficial consultada em 23/10/2026: [QZ — Signing](https://qz.io/docs/signing). O QZ recomenda assinatura no servidor e separa os callbacks de certificado e assinatura; estes podem ser invocados por funções além da impressão. O roteiro deve ser adaptado às versões e chamadas reais da instalação.
+
+## Levantamento de contratos — Fase 5D.2 (28/10/2026)
+
+Somente leitura; nenhuma chave, certificado, assinatura ou funcionalidade de impressão foi alterada. O conteúdo do arquivo privado não foi aberto, copiado ou exibido.
+
+- Backend `Pedidos.Controller.js:188-203`: o ramo InfinitePay retorna após persistência/reserva e não emite o aviso legado; o ramo posterior usa `emit('novo_pedido_recebido')` sem recibo durável do destinatário.
+- Frontend `NotificationListener.jsx:25-43`: o Set de deduplicação é volátil, limitado e atualizado antes da tentativa. O fluxo aguarda imprimirCupom, mas não devolve confirmação autenticada/persistente ao Backend. Revalida elegibilidade financeira antes de imprimir; essa trava deve permanecer.
+- Frontend `qzService.js:112-116`: aguarda qz.print e retorna true. A [API oficial](https://qz.io/api/qz) informa que o documento pode ter sido enviado sem impressão física concluída. Não foram encontrados callbacks de estado da impressora nesse serviço.
+- A [documentação de estados](https://qz.io/docs/printer-status) descreve listeners e eventos originados de Winspool/CUPS. Sua existência não comprova confirmação física confiável em cada equipamento instalado. Precisariam de correlação persistente por trabalho, autenticação, idempotência e ensaio por versão/modelo; não estão homologados nesta fase.
+
+Consequência: liberação lógica, tentativa de envio, recebimento verificável e impressão física são níveis distintos. O recibo do receptor sintético 5D.2 não comprova nenhum deles no QZ real. O destino operacional real permanece sem conexão; não se transforma promise, Socket.IO emitido ou sucesso local em recibo físico.
+
+O risco potencial de produção continua alto: PEM rastreado, identidade ativa desconhecida e `/qz/assinar` sem autenticação local. O controlador usa `QZ_PRIVATE_KEY` e ainda registra request, fragmento de assinatura e erro livre (`Qz.Controller.js:73,88,101,106-107`). Não foi verificada correspondência entre variável, arquivo e certificado confiado.
+
+O plano de contenção e rotação acima continua pendente de autorização própria: restringir distribuição/acesso e logs; inventariar chamadas legítimas; testar sessão, papel/permissão, Origin/CSRF e limitação de operações sem mudar bytes assinados; conferir identidade por fingerprints públicos em canal seguro; decidir rotação coordenada se a chave exposta estiver ativa, com piloto e contingência. Nenhuma restrição de rede, autenticação do assinador, revogação ou limpeza de histórico foi aplicada automaticamente. Não há certificação de segurança do QZ para produção nesta fase.

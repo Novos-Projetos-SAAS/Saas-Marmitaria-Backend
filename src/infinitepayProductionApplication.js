@@ -4,21 +4,25 @@ import { parseObservedCreatedLink,parseObservedPaymentCheck,parseObservedInfinit
 import { createInfinitepayRuntime,startInfinitepayProcessing } from './infinitepayRuntime.js';
 import { decryptApiKey } from './utils/infinitepayCredentials.js';
 import { assertProductionDatabase,productionBlocked,productionProxyConfigured } from './config/infinitepayProduction.js';
+import { timingSafeEqual } from 'node:crypto';
 
 export async function initializeProductionApplication({app,db,env,config,transport,now,productionAuthorization,operationalAdapter}) {
     if(!productionProxyConfigured(app,config)) throw productionBlocked();
     await assertProductionDatabase(db,config);
     for(const table of ['infinitepay_entregas_operacionais','infinitepay_entregas_tentativas'])
         if(!await db.schema.hasTable(table)) throw productionBlocked();
-    const context=Object.freeze({database:config.database,databaseId:config.databaseId,publicOrigin:config.publicOrigin});
+    const context=Object.freeze({database:config.database,databaseId:config.databaseId,publicOrigin:config.publicOrigin,environment:'production',deploymentId:config.databaseId});
+    const destinationId=operationalAdapter?.id;
     let worker,running=false,starting,generation=0,cycles=0,errors=0;
     const flag=operation=>({CREATE_LINK:'INFINITEPAY_CHECKOUT_ENABLED',VERIFY_PAYMENT:'INFINITEPAY_VERIFY_ENABLED',
         DELIVER_ORDER:'INFINITEPAY_DELIVERY_ENABLED',WORKER:'INFINITEPAY_WORKER_ENABLED'})[operation];
-    async function permitted(operation) {
+    async function permitted(operation,{credentialId}={}) {
         if(env[flag(operation)]!=='true' || typeof productionAuthorization!=='function') return false;
+        if(operation==='DELIVER_ORDER' && operationalAdapter?.id!==destinationId)return false;
         try {
             await assertProductionDatabase(db,config);
-            return await productionAuthorization(Object.freeze({...context,operation}))===true && env[flag(operation)]==='true';
+            return await productionAuthorization(Object.freeze({...context,operation,...(credentialId===undefined?{}:{credentialId}),
+                ...(operation==='DELIVER_ORDER' ? {destinationId}: {})}))===true && env[flag(operation)]==='true';
         } catch { return false; }
     }
     async function credentials(trx=db,proposed) {
@@ -28,8 +32,8 @@ export async function initializeProductionApplication({app,db,env,config,transpo
         if(!c || !/^[\x21-\x7E]{1,4096}$/.test(decryptApiKey(c,row.handle))) throw productionBlocked();
     }
     const processingAllowed=()=>running && env.INFINITEPAY_WORKER_ENABLED==='true';
-    async function canOperate(operation) {
-        return processingAllowed() && await permitted('WORKER') && await permitted(operation) && processingAllowed();
+    async function canOperate(operation,details) {
+        return processingAllowed() && await permitted('WORKER') && await permitted(operation,details) && processingAllowed();
     }
     let consumer;
     if(operationalAdapter) {
@@ -39,7 +43,7 @@ export async function initializeProductionApplication({app,db,env,config,transpo
             if(typeof operationalAdapter[method]!=='function') throw productionBlocked();
             guardedAdapter[method]=async(...args)=>{
                 if(method!=='send' && !await canOperate('DELIVER_ORDER')) throw productionBlocked();
-                if(!processingAllowed() || env.INFINITEPAY_DELIVERY_ENABLED!=='true' || args.at(-1)?.signal?.aborted) throw productionBlocked();
+                if(!processingAllowed() || operationalAdapter.id!==destinationId || env.INFINITEPAY_DELIVERY_ENABLED!=='true' || args.at(-1)?.signal?.aborted) throw productionBlocked();
                 return operationalAdapter[method](...args);
             };
         }
@@ -58,7 +62,17 @@ export async function initializeProductionApplication({app,db,env,config,transpo
     const guardedTransport=async(url,init)=>{
         const operation=url==='https://api.checkout.infinitepay.io/links'?'CREATE_LINK':
             url==='https://api.checkout.infinitepay.io/payment_check'?'VERIFY_PAYMENT':null;
-        if(!operation || init?.method!=='POST' || !await canOperate(operation)) throw productionBlocked();
+        if(!operation || init?.method!=='POST' || !processingAllowed()) throw productionBlocked();
+        let request;
+        try{request=JSON.parse(init.body);}catch{throw productionBlocked();}
+        if(typeof request?.order_nsu!=='string' || !request.order_nsu.trim() || request.order_nsu!==request.order_nsu.trim())throw productionBlocked();
+        const attempt=await db('pagamentos').where({order_nsu:request.order_nsu,provedor:'INFINITEPAY'}).first();
+        const stored=attempt && await db('infinitepay_credenciais').where({id:attempt.credencial_id,handle:attempt.handle_snapshot,config_id:1}).first();
+        if(!stored || (operation==='VERIFY_PAYMENT' && request.handle!==attempt.handle_snapshot) || typeof init.headers?.['X-Api-Key']!=='string')throw productionBlocked();
+        const expected=Buffer.from(decryptApiKey(stored,attempt.handle_snapshot)),supplied=Buffer.from(init.headers['X-Api-Key']);
+        try{if(expected.length!==supplied.length || !timingSafeEqual(expected,supplied))throw productionBlocked();}
+        finally{expected.fill(0);supplied.fill(0);}
+        if(!await canOperate(operation,{credentialId:attempt.credencial_id}))throw productionBlocked();
         if(!processingAllowed() || env[flag(operation)]!=='true' || init.signal?.aborted) throw productionBlocked();
         return transport(url,init);
     };

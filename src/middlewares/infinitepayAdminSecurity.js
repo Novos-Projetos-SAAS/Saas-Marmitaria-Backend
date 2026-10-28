@@ -1,4 +1,5 @@
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { timingSafeEqual } from 'node:crypto';
+import { infinitepaySessionCsrf } from '../utils/infinitepaySessionCsrf.js';
 import connection from '../database/connection.js';
 export async function requireActiveFinancialUser(req, res, next) {
     try {
@@ -12,7 +13,7 @@ export async function requireActiveFinancialUser(req, res, next) {
 }
 export function csrfToken(req) {
     if (!process.env.JWT_SECRET || !req.cookies?.token) throw new Error('Sessão indisponível.');
-    return createHmac('sha256', process.env.JWT_SECRET).update('infinitepay-csrf-v1\0' + req.cookies.token).digest('base64url');
+    return infinitepaySessionCsrf(req.cookies.token,process.env.JWT_SECRET);
 }
 export function protectInfinitepayWrite(req, res, next) {
     const origins = (process.env.ALLOWED_ORIGINS || '').split(',').map(value => value.trim()).filter(Boolean);

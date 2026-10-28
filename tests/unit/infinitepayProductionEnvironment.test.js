@@ -33,6 +33,12 @@ test('connection-string options cannot override the approved TLS configuration',
         raw:async()=>{sql++;return {rows:[{name:config.database}]};}},config));
     assert.equal(sql,0);
 });
+test('a persistent demo search path cannot be reused as production before any SQL',async()=>{
+    const config=validateInfinitepayEnvironment(productionEnv);let sql=0;
+    await assert.rejects(assertProductionDatabase({client:{config:{searchPath:['infinitepay_demo'],connection:{host:config.host,database:config.database,port:config.port}}},
+        raw:async()=>{sql++;return {rows:[{name:config.database}]};}},config));
+    assert.equal(sql,0);
+});
 test('financial production Knex profile requires TLS certificate verification for a remote database',async()=>{
     const keys=['NODE_ENV','INFINITEPAY_MODE','DATABASE_URL'],old=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
     try {
