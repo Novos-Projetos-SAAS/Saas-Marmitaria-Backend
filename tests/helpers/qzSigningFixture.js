@@ -45,13 +45,13 @@ async function prototypeTables(db) {
     });
     await db.schema.createTable('qz_proto_documentos',t=>{
         t.uuid('id').primary();t.uuid('estacao_id').notNullable().references('id').inTable('qz_proto_estacoes').onDelete('RESTRICT');
-        t.integer('pedido_id').notNullable().references('id').inTable('pedidos').onDelete('RESTRICT');t.jsonb('params').notNullable();t.timestamp('expira_em',{useTz:true}).notNullable();
+        t.integer('pedido_id').notNullable().references('id').inTable('pedidos').onDelete('RESTRICT');t.jsonb('params').notNullable();t.string('source_hash',64).notNullable();t.timestamp('expira_em',{useTz:true}).notNullable();
     });
     await db.schema.createTable('qz_proto_intencoes',t=>{
         t.uuid('id').primary();t.integer('usuario_id').notNullable().references('id').inTable('usuarios').onDelete('RESTRICT');t.string('sessao_hash',64).notNullable();
         t.uuid('estacao_id').notNullable().references('id').inTable('qz_proto_estacoes').onDelete('RESTRICT');
         t.uuid('documento_id').unique().references('id').inTable('qz_proto_documentos').onDelete('RESTRICT');
-        t.text('chamada').notNullable();t.string('request_digest',64).notNullable().unique();t.string('params_hash',64).notNullable();t.bigInteger('request_timestamp').notNullable();
+        t.text('chamada').notNullable();t.string('request_digest',64).notNullable().unique();t.string('params_hash',64).notNullable();t.string('operacao_hash',64).notNullable();t.bigInteger('request_timestamp').notNullable();
         t.text('estado').notNullable();t.check("estado IN ('RESERVADA','CONSUMIDA','ASSINADA')");
         t.timestamp('criado_em',{useTz:true}).notNullable();t.timestamp('expira_em',{useTz:true}).notNullable();
     });
@@ -83,6 +83,29 @@ export async function createQzSigningFixture(identity) {
             return jwt.sign({id:f.actor.id,iat:seconds-1,exp:seconds+(expired?-1:3600),jti:randomUUID()},wrongSecret?'WRONG_SYNTHETIC_SECRET':sessionSecret,{algorithm:'HS256'});
         };
         f.useToken=token=>{f.session={token,origin:'https://shop.invalid.test',csrf:token?infinitepaySessionCsrf(token,sessionSecret):''};};f.useToken(f.token());
+        const [size]=await f.db('tamanhos_marmitas').insert({nome:'SYNTHETIC SIZE',preco_base:1}).returning('*');
+        f.deriveDocument=async({reader,station,document})=>{
+            const order=await reader('pedidos').where({id:document.pedido_id}).first('id','nome_cliente','telefone_cliente','endereco_cliente','metodo_entrega','valor_total','metodo_pagamento_id');
+            if(!order)throw new Error('Documento sintético indisponível.');
+            const items=await reader('itens_pedido').where({pedido_id:order.id}).orderBy('id').select('id','quantidade','preco_unitario','subtotal','nome_item_snapshot');
+            const escape=value=>String(value ?? '').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+            const html='<h1>Pedido '+order.id+'</h1><p>'+escape(order.nome_cliente)+'</p><p>'+escape(order.endereco_cliente)+'</p><ul>'+items.map(item=>'<li>'+item.quantidade+' '+escape(item.nome_item_snapshot)+'</li>').join('')+'</ul><p>'+Math.round(Number(order.valor_total)*100)+' centavos</p>';
+            // Exact wrapper used by qzService.imprimirCupom; the unchanged-client integration detects drift.
+            const data=`
+            <!DOCTYPE html>
+            <html>
+                <head>
+                    <meta charset="UTF-8">
+                </head>
+                <body style="width:58mm;margin:0;padding:0;background:#ffffff;">
+                    ${html}
+                </body>
+            </html>
+        `;
+            const config=syntheticQz.configs.create(station.impressora,printerOptions);
+            return {html,sourceHash:createHash('sha256').update(JSON.stringify({order,items})).digest('hex'),
+                params:{printer:config.getPrinter(),options:structuredClone(config.config),data:[{type:'pixel',format:'html',flavor:'plain',data}]}};
+        };
         f.document=async({online=false,status='AGUARDANDO',verified=false,method='DINHEIRO'}={})=>{
             const paymentMethod=await f.db('metodos_pagamento').where({codigo:online?'PIX':method}).first();
             const [order]=await f.db('pedidos').insert({nome_cliente:'SYNTHETIC QZ',telefone_cliente:'00000000000',tipo_pedido:'Remoto',metodo_entrega:'Retirada',
@@ -90,14 +113,13 @@ export async function createQzSigningFixture(identity) {
             if(online)await f.db('pagamentos').insert({pedido_id:order.id,tentativa_numero:1,order_nsu:'SYNTHETIC-'+randomUUID(),status,valor_centavos:100,
                 valid_until:new Date(f.clock.getTime()+3600000),...(verified?{provider_verified_at:f.clock,pago_em:f.clock,transaction_nsu:'SYNTHETIC-TXN-'+randomUUID(),
                     invoice_slug:'SYNTHETIC-SLUG-'+randomUUID(),capture_method:'pix',valor_base_provider_centavos:100}:{} )});
-            const config=syntheticQz.configs.create(printerName,printerOptions);
-            // getOptions requires a connected Tray for version adaptation; the fake-transport harness checks these 2.2.6 defaults.
-            const params={printer:config.getPrinter(),options:structuredClone(config.config),data:[{type:'pixel',format:'html',flavor:'plain',data:'<html><body>SYNTHETIC APPROVED DOCUMENT '+order.id+'</body></html>'}]};
-            const [doc]=await f.db('qz_proto_documentos').insert({id:randomUUID(),estacao_id:f.station.id,pedido_id:order.id,params,expira_em:new Date(f.clock.getTime()+300000)}).returning('*');return doc;
+            await f.db('itens_pedido').insert({pedido_id:order.id,tamanho_marmita_id:size.id,quantidade:1,preco_unitario:1,subtotal:1,nome_item_snapshot:'SYNTHETIC ITEM'});
+            const derived=await f.deriveDocument({reader:f.db,station:f.station,document:{pedido_id:order.id}});
+            const [doc]=await f.db('qz_proto_documentos').insert({id:randomUUID(),estacao_id:f.station.id,pedido_id:order.id,params:derived.params,source_hash:derived.sourceHash,expira_em:new Date(f.clock.getTime()+300000)}).returning('*');return {...doc,html:derived.html};
         };
         f.doc=await f.document();
         f.anotherService=options=>createQzSigningPrototype({db:f.db,origins:['https://shop.invalid.test'],sessionSecret:()=>sessionSecret,now:()=>new Date(f.clock),
-            signDigest:async digest=>{f.signCalls++;if(f.signFailure)throw new Error('SYNTHETIC_PRIVATE_SECRET');await f.onSign?.();return identity.sign(digest);},verifyDigest:identity.verify,...options});
+            signDigest:async digest=>{f.signCalls++;if(f.signFailure)throw new Error('SYNTHETIC_PRIVATE_SECRET');await f.onSign?.(digest);return identity.sign(digest);},verifyDigest:identity.verify,deriveDocument:f.deriveDocument,...options});
         f.service=await f.anotherService();
         f.additionalServer=async({globalLimit=100}={})=>{
             const app=express();app.use(cookieParser());app.use(createQzSigningPrototypeRouter({service:f.service,globalLimit}));
@@ -114,6 +136,7 @@ export async function createQzSigningFixture(identity) {
             });request.close=close;return request;
         };
         f.request=await f.additionalServer();
+        f.restart=async()=>{await Promise.all([...servers].map(close=>close()));f.service=await f.anotherService();f.request=await f.additionalServer();};
         f.bootstrap=async()=>{const response=await f.request('/csrf',undefined,{method:'GET'});if(response.status!==200)throw new Error('CSRF sintético recusado.');f.session.csrf=response.data.csrfToken;};
         f.command=(call='printers.find',doc=f.doc)=>{
             const message=JSON.stringify({call,params:call==='print'?doc.params:{query:printerName},timestamp:f.clock.getTime()});

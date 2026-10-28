@@ -29,10 +29,10 @@ function declaredScope(db) {
 }
 
 // Test-only composition: no operational key lookup, environment activation flag, table creation or router mounting.
-export async function createQzSigningPrototype({db,origins,sessionSecret,signDigest,verifyDigest,now=()=>new Date(),maxCalls=100}={}) {
+export async function createQzSigningPrototype({db,origins,sessionSecret,signDigest,verifyDigest,deriveDocument,now=()=>new Date(),maxCalls=100}={}) {
     const scope=declaredScope(db);
     if(!Array.isArray(origins) || !origins.length || origins.some(value=>{try{return new URL(value).protocol!=='https:' || new URL(value).origin!==value;}catch{return true;}}) ||
-        typeof sessionSecret!=='function' || typeof signDigest!=='function' || typeof verifyDigest!=='function' || typeof now!=='function' ||
+        typeof sessionSecret!=='function' || typeof signDigest!=='function' || typeof verifyDigest!=='function' || typeof deriveDocument!=='function' || typeof now!=='function' ||
         !Number.isSafeInteger(maxCalls) || maxCalls<1 || maxCalls>1000)refuse();
     const allowedOrigins=new Set(origins);let deployment,lastTime=0;
     const time=()=>{const value=now();if(!(value instanceof Date) || !Number.isFinite(value.getTime()) || value.getTime()<lastTime)refuse();lastTime=value.getTime();return new Date(lastTime);};
@@ -83,19 +83,23 @@ export async function createQzSigningPrototype({db,origins,sessionSecret,signDig
         if(!station)refuse('QZ_COMMAND_DENIED',403);
         if(call==='printers.find') {
             if(documentId!==undefined && documentId!==null)refuse('QZ_INVALID_REQUEST',400);
-            return {params:{query:station.impressora},expiresAt:new Date(time().getTime()+15000)};
+            return {params:{query:station.impressora},bindingHash:paramsHash({user:actor.id,station:station.id,printer:station.impressora}),expiresAt:new Date(time().getTime()+15000)};
         }
         if(call!=='print' || !uuid(documentId))refuse('QZ_COMMAND_DENIED',403);
         const document=await reader('qz_proto_documentos').where({id:documentId,estacao_id:stationId}).first();
         if(!document || new Date(document.expira_em)<=time() || !await aplicarElegibilidadeOperacional(reader('pedidos'),{confirmedStates:['PAGA','LIQUIDADA']})
             .where({'pedidos.id':document.pedido_id}).whereNull('pedidos.deletado_em').first('pedidos.id'))refuse('QZ_COMMAND_DENIED',403);
-        const params=document.params;
+        // A browser preimage is not a trusted document source. Derive again from server-owned order data.
+        const derived=await deriveDocument({reader,station,document});
+        if(!/^[a-f0-9]{64}$/.test(document.source_hash || '') || derived?.sourceHash!==document.source_hash || paramsHash(derived?.params)!==paramsHash(document.params))refuse('QZ_COMMAND_DENIED',403);
+        const params=derived.params;
         record(params,['printer','options','data']);record(params.printer,['name']);
         if(params.printer.name!==station.impressora || Object.keys(params.printer).length!==1 || params.options?.copies!==1 ||
             !Array.isArray(params.data) || params.data.length!==1)refuse('QZ_COMMAND_DENIED',403);
         const item=params.data[0];record(item,['type','format','flavor','data']);
         if(item.type!=='pixel' || item.format!=='html' || item.flavor!=='plain' || typeof item.data!=='string' || !item.data || Buffer.byteLength(item.data)>32768)refuse('QZ_COMMAND_DENIED',403);
-        return {params,expiresAt:new Date(Math.min(time().getTime()+15000,new Date(document.expira_em).getTime()))};
+        return {params,bindingHash:paramsHash({user:actor.id,station:station.id,printer:station.impressora,document:document.id,order:document.pedido_id,source:document.source_hash}),
+            expiresAt:new Date(Math.min(time().getTime()+15000,new Date(document.expira_em).getTime()))};
     }
     const storedAllowed=(reader,actor,row)=>approvedParams(reader,actor,{stationId:row.estacao_id,documentId:row.documento_id,call:row.chamada});
     async function bootstrap(request) {
@@ -116,7 +120,7 @@ export async function createQzSigningPrototype({db,origins,sessionSecret,signDig
                 const allowed=await approvedParams(trx,actor,{stationId:request.stationId,documentId:request.documentId,call:command.call});
                 const parameters=paramsHash(allowed.params);if(paramsHash(command.params)!==parameters)refuse('QZ_COMMAND_DENIED',403);
                 const id=randomUUID();await trx('qz_proto_intencoes').insert({id,usuario_id:actor.id,sessao_hash:actor.sessionHash,estacao_id:request.stationId,
-                    documento_id:request.documentId || null,chamada:command.call,request_digest:request.request,params_hash:parameters,request_timestamp:command.timestamp,
+                    documento_id:request.documentId || null,chamada:command.call,request_digest:request.request,params_hash:parameters,operacao_hash:allowed.bindingHash,request_timestamp:command.timestamp,
                     estado:'RESERVADA',criado_em:time(),expira_em:allowed.expiresAt});
                 await audit(trx,'PREPARE','ALLOW','INTENT_CREATED',actor,id);return {intentId:id,expiresAt:allowed.expiresAt.toISOString()};
             });
@@ -132,13 +136,13 @@ export async function createQzSigningPrototype({db,origins,sessionSecret,signDig
                 if(!row || row.usuario_id!==actor.id || row.sessao_hash!==actor.sessionHash || row.request_digest!==request.request)refuse('QZ_AUTH_DENIED',403);
                 if(row.estado!=='RESERVADA' || new Date(row.expira_em)<=time())refuse('QZ_REPLAY',409);
                 fresh(Number(row.request_timestamp));const allowed=await storedAllowed(trx,actor,row);
-                if(paramsHash(allowed.params)!==row.params_hash)refuse('QZ_COMMAND_DENIED',403);
+                if(paramsHash(allowed.params)!==row.params_hash || allowed.bindingHash!==row.operacao_hash)refuse('QZ_COMMAND_DENIED',403);
                 await trx('qz_proto_intencoes').where({id:row.id}).update({estado:'CONSUMIDA'});
                 await audit(trx,'SIGN','ALLOW','SIGN_CLAIMED',actor,row.id);return row;
             });
             // A durable, one-use claim precedes key use. No failed/abandoned claim is automatically retried.
             await authenticate(request.session);const allowed=await storedAllowed(db,actor,claimed);
-            if(paramsHash(allowed.params)!==claimed.params_hash)refuse('QZ_COMMAND_DENIED',403);
+            if(paramsHash(allowed.params)!==claimed.params_hash || allowed.bindingHash!==claimed.operacao_hash)refuse('QZ_COMMAND_DENIED',403);
             if(new Date(claimed.expira_em)<=time())refuse('QZ_REPLAY',409);
             fresh(Number(claimed.request_timestamp));
             const signature=await signDigest(request.request);
@@ -146,7 +150,9 @@ export async function createQzSigningPrototype({db,origins,sessionSecret,signDig
             await db.transaction(async trx=>{
                 await lock(trx,actor);await authenticate(request.session,{reader:trx});
                 const row=await trx('qz_proto_intencoes').where({id:claimed.id,estado:'CONSUMIDA'}).forUpdate().first();
-                if(!row || new Date(row.expira_em)<=time() || paramsHash((await storedAllowed(trx,actor,row)).params)!==row.params_hash)refuse('QZ_COMMAND_DENIED',403);
+                if(!row || new Date(row.expira_em)<=time())refuse('QZ_COMMAND_DENIED',403);
+                const final=await storedAllowed(trx,actor,row);
+                if(paramsHash(final.params)!==row.params_hash || final.bindingHash!==row.operacao_hash)refuse('QZ_COMMAND_DENIED',403);
                 await audit(trx,'SIGN','ALLOW','SIGNED',actor,row.id);await trx('qz_proto_intencoes').where({id:row.id}).update({estado:'ASSINADA'});
             });
             return signature;
