@@ -226,6 +226,74 @@ Continuam por decisão do operador: duração e teto do turno, frequência de su
 
 `prepareOperationalRecipientContract` valida proposta de identidade exata de estação, exigência de recibos autenticados, retenção pelo menos igual à janela de recuperação e permissões explícitas para confirmação do funcionário e reimpressão auditada. Não concede essas permissões, não escolhe transporte ou duração de retenção e não executa confirmações/reimpressões. Retorna proposalOnly e physicalPrintingProven=false. Dois adaptadores sintéticos independentes comprovam unicidade/consulta persistente do mesmo recibo, inclusive após reconstrução; estação ou chave errada não pode reivindicá-lo. A retenção real, autenticação/rotação da estação e implementação da confirmação humana/reimpressão continuam pendentes de aprovação e ensaio, sem conexão a Socket.IO/QZ.
 
+### Ensaio integrado de pré-produção (Fase 5D.5)
+
+O ensaio permanente `tests/integration/preproductionRehearsal.test.js` compõe os módulos existentes sem instalar nada em app/server: autorizador administrativo, router preparado, runtime financeiro, parsers observados, reserva idempotente, confirmação independente, outbox e consumidor durável com receptor sintético. O transporte é uma função injetada sem rede; somente reconhece URLs contratuais e a chave literal sintética. Não existe chamada real à InfinitePay. Os fixtures exercitam NODE_ENV/INFINITEPAY_MODE production e suas proteções, sem usar a exceção creationEnabled de testes. Aprovações e flags pertencem exclusivamente a processos/dados sintéticos descartáveis.
+
+O laboratório cria dois clusters PostgreSQL próprios em portas efêmeras loopback, cada qual com banco `infinitepay_preproduction_test`, e schemas próprios `iptest_*`. Não utiliza H1/H4/DEMO nem o servidor operacional. Cada fixture tem identidade UUID exclusiva; apenas a restauração conserva a identidade do backup, com a origem quiescida e parada durável antes da cópia. HTTPS usa certificado localhost efêmero próprio, confiado somente pelo cliente de teste; não instala confiança no Windows nem reutiliza QZ/PEM ou certificado da DEMO.
+
+Pré-requisitos locais: PostgreSQL18 com initdb/pg_ctl/createdb/pg_dump/pg_restore e OpenSSL. No Windows o helper usa as instalações já existentes em Program Files; em outro local podem ser indicados `PREPRODUCTION_PG_BIN` e `PREPRODUCTION_OPENSSL`. Não precisa de API Key, login em provedor, túnel ou serviço público. Para repetir somente o laboratório e os testes de infraestrutura:
+
+```powershell
+node --test --test-isolation=none --test-concurrency=1 tests/integration/preproductionRehearsal.test.js tests/unit/productionLogoutBridge.test.js tests/unit/preproductionCleanup.test.js
+```
+
+O helper usa diretório temporário canônico recém-criado e confere conexão, banco, porta e data_directory antes dos testes. A limpeza tenta todos os serviços/fixtures e todos os clusters, restaurando o ambiente em finally. Só remove o diretório quando todas as paradas foram confirmadas; em falha, conserva os artefatos sintéticos para intervenção e reporta erro. Não encerra processos por nome nem apaga bancos/diretórios preexistentes. Dumps, chaves TLS e logs efêmeros não são versionados.
+
+| Composição efetivamente ensaiada | Evidência e limite |
+|---|---|
+| Sessão sintética / HTTPS / CSRF / aprovação | Expiração real da janela, revogação da sessão entre instâncias, parada durável, reconstrução do autorizador e recuperação sem aprovação automática. Não é login real do operador. |
+| Pix e Crédito / reserva concorrente | Um único envio simulado; a requisição concorrente pode observar CRIANDO enquanto a vencedora finaliza. Banco termina AGUARDANDO; nenhuma outbox antes da prova independente. |
+| Webhook / payment_check / outbox | Callback duplicado persistido/deduplicado; paid=false não libera. Só paid=true com vínculo e valor válidos confirma. Valores/taxas dos fixtures são artificiais, sem prova de taxa comercial. |
+| Entrega / recibo / duas instâncias | Um recebimento persistente por chave; destinatário incorreto bloqueia. Timeout após commit exige recuperação consultando recibo; não cria nova cobrança. |
+| Reinício antes/depois do envio | Outbox paga continua bloqueada até nova aprovação de entrega; recibo já persistido permite concluir a outbox sem segundo recebimento. |
+| Revogação em trânsito | Resposta independente já autorizada pode conservar prova PAGA/outbox; parada impede nova entrega. Revogação após recepção conserva evidência sem pressupor cancelamento físico. |
+| Reimpressão | Somente fixture: sessão/capacidade e permissão específica, confirmação explícita, chave própria e registro auditável/idempotente separado. Não executa QZ nem comprova saída de papel. |
+
+#### Backup e recuperação descartáveis
+
+O teste quiesce aplicações, persiste parada e encerramento de sessão, executa pg_dump custom somente do schema sintético e registra tamanho/hash do arquivo. pg_restore com exit-on-error restaura em schema ausente da segunda instância; não reaplica migrations nem sobrescreve dados. Compara integralmente 14 tabelas, incluindo migrations, pedidos/itens, tentativas/eventos, outbox, grants, revogações, auditorias, ledger/tentativas de entrega e recibos. A instância restaurada sofre shutdown immediate, exclusivamente em seu data_directory temporário, e volta com recuperação PostgreSQL. Nova sessão, recuperação supervisionada e aprovação explícita de entrega concluem a outbox original sem nova recepção ou solicitação financeira.
+
+Isso comprova o cenário local sintético, não RPO/RTO, failover, backup externo, restore de produção ou custódia comercial de chaves. A chave de criptografia e a chave de recibos sintéticos são mantidas pelo fixture; o dump não substitui a custódia separada desses segredos. Não operar simultaneamente origem e clone restaurado como instalações comerciais ativas.
+
+#### Logout e observabilidade preparados, não montados
+
+A resposta legado foi extraída para `src/utils/logoutResponse.js` sem alterar endpoint, JSON ou opções do cookie; testes cobrem development/production e o navegador existente. `createProductionLogoutBridge({authorizer,logout})` é montado apenas no ensaio: exige HTTPS, cookie JWT, Origin/CSRF e permissão pelo autorizador, aguarda `{ended:true}` durável e somente então delega a limpeza do cookie. Resultado incompleto, erro de persistência ou auditoria pendente não viram sucesso. Não há fallback para logout simples no caminho sensível.
+
+O Frontend atual envia POST /auth/logout sem o novo CSRF. Aplicar a ponte indistintamente quebraria esse contrato para usuários normais; por isso o caminho principal conserva seu funcionamento e a ponte continua fora dele. Antes de instalar: aprovar dispatcher de sessão no servidor, bootstrap/envio de CSRF para sessões sensíveis, tratamento de token inválido/expirado/revogado, falha de persistência, cookies/domínios e sessões normais. A ligação não pode depender apenas do cliente nem deixar outro endpoint simples encerrar aparentemente uma sessão sensível sem revogá-la.
+
+`createProductionDiagnostics` também não é montado em app/server. O ensaio expõe /diagnostics somente no HTTPS loopback, com sessão, Origin e CSRF. Retorna contagens/idades agregadas de pendências financeiras e INCERTA, eventos pendentes, erros locais do worker, outbox pendente/falha/atrasada, entregas ambíguas, aprovações/revogações/paradas e pendências de auditoria. Erros de credencial são decisões locais; não certificam titularidade/validade da API Key no provedor. Não retorna tokens, chaves, UUID da implantação, pedidos, identificadores financeiros, URLs ou exceções livres.
+
+Contagens usam snapshot repeatable-read, cercado por duas observações administrativas normalizadas. Mudança da geração/parada/aprovações durante a observação rejeita o diagnóstico; armazenamento indisponível ou métricas incompletas retornam erro, sem substituir falhas por zero. CommercialReady permanece false: esse diagnóstico não é autorização de ativação nem certificação de disponibilidade externa. Alertas, limiares, supervisor entre hosts e canal de parada fora de banda continuam pendentes de decisão/ensaio operacional.
+
+#### Políticas e contratos externos
+
+Recomendação: conservar janelas curtas para operações supervisionadas atuais. São o único caminho efetivo ensaiado no runtime; exigem intervenção frequente e pausam consultas/entregas quando expiram. Para comércio contínuo, o modelo de turno com leases e supervisão é uma alternativa a aprovar: pode reduzir pausas se houver renovação humana, mas exige responsável, prazo/teto, frequência de supervisão, quórum, recuperação e drenagem definidos. Sua simulação nega expiração, parada, revogação e reinício sem nova aprovação e sempre retorna authorized=false. Nenhuma duração comercial foi escolhida ou habilitada.
+
+As [instruções oficiais atuais](https://ajuda.infinitepay.io/pt-BR/articles/10766888-como-usar-o-checkout-integrado-da-infinitepay) e a [documentação interativa](https://www.infinitepay.io/checkout-documentacao) foram consultadas em 28/10/2026, somente páginas documentais. Diferem na apresentação de handle/API Key e webhook versus webhook_url; os adapters observados não foram trocados. Ambas apresentam consulta independente; a existência de single_payment não estabelece idempotência de novas requisições de criação.
+
+| Tema | Implementado / documentado / limite não comprovado |
+|---|---|
+| Prova financeira | Consulta independente e vínculo local implementados, formatos observados anteriormente e reensaiados com mocks; nenhum teste real nesta fase. |
+| Webhook | Persistência/deduplicação e reconhecimento HTTP200 implementados; eventos e possibilidade de retentativa documentados. Assinatura verificável, bytes/algoritmo, replay e política completa de entrega exigem confirmação do provedor. |
+| Idempotência / resposta perdida | Reserva e bloqueio local de INCERTA implementados. Falta contrato externo de chave idempotente e recuperação/consulta da criação perdida; não repetir POST /links automaticamente. |
+| Estorno | Evento listado na ajuda; payload, prova independente, correlação e efeito financeiro completo ainda precisam de homologação. O parser observado não inventa essa confirmação. |
+| Liquidação / repasse | Evento settled listado; não comprova sozinho depósito/repasse bancário. Evidência e conciliação específicas continuam pendentes. |
+
+#### Matriz de prontidão
+
+| Área | Ensaio local | Implantação comercial / bloqueador |
+|---|---|---|
+| Controle, finanças e entrega sintéticos | GO restrito ao ensaio reproduzível | NO-GO: contratos e infraestrutura reais não certificados. |
+| QZ/PEM e identidade da estação | Plano executivo separado; sem executar mudanças | CRÍTICO de prontidão: identidade/custódia, exposição e autorização do assinador sem comprovação suficiente; risco técnico alto, sem afirmar comprometimento. |
+| Destino real / recibo / reimpressão | Somente adaptadores/efeitos sintéticos | CRÍTICO: não há recepção operacional real autenticada e homologada. |
+| Logout sensível e continuidade | Ponte e modelo preparados, fora da composição operacional | ALTO: dispatcher/CSRF, política comercial e supervisão entre hosts precisam de aprovação e ensaio. |
+| Contratos InfinitePay / reconciliação | Proteção local e mocks | ALTO: autenticidade, idempotência/recuperação externas e ciclo estorno/repasse pendentes. |
+| Backup / alertas / infraestrutura | Restore e reinício locais comprovados | ALTO: custódia, RPO/RTO, backup externo e recuperação real não ensaiados. |
+| Lint Frontend | Problemas preexistentes registrados, sem alteração | MÉDIO: 15 erros de set-state-in-effect e 1 aviso de exhaustive-deps; correção fora desta fase. |
+
+O resultado global é NO-GO para produção enquanto houver bloqueador crítico ou garantia essencial sem comprovação. Nenhum teste local autoriza montar controles no servidor existente, aplicar migrations em bancos homologados, habilitar checkout/worker comercial, conectar cozinha, imprimir, fazer push/merge ou deploy.
+
 ## Demonstração local persistente (sem dinheiro real)
 
 O launcher `scripts/infinitepay-demo.ps1` usa PowerShell 7.2+, Node, PostgreSQL18 e o OpenSSL do Git já instalados nesta máquina. Reutiliza **127.0.0.1:55439/infinitepay_phase1_test**, criando somente o schema persistente **infinitepay_demo**. Os testes automáticos continuam usando seus próprios schemas descartáveis. Não acessa H1/55440 ou produção. `Prepare` aplica somente migrations pendentes nesse schema identificado e inicializa dados uma vez, sem apagar registros, executar seeds destrutivos ou redefinir configurações a cada início.
