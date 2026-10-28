@@ -138,7 +138,7 @@ try {
         httpServer.once('error', reject);
         httpServer.listen(PORT, financialEnvironment ? '127.0.0.1' : undefined, resolve);
     });
-    financial.start();
+    await financial.start();
     console.log(`\n${logSymbols.success} ${chalk.cyan(`API rodando na porta ${httpServer.address().port}`)}`);
     for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => {
         closeServer().catch(() => { process.exitCode = 1; });

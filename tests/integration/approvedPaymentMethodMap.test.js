@@ -164,11 +164,14 @@ describe('approved real payment identity map on synthetic PostgreSQL data', { co
             await migrateBaseline(historical.db);
             await historical.db('metodos_pagamento').insert(approved.map(({ id, nome }) => ({ id, nome, ativo: true })));
             const applied = await historical.db.migrate.latest();
-            assert.equal(applied[1].length, 8);
-            assert.deepEqual(applied[1].slice(-4), [migrationName, '20261024000100_checkout_sessoes.js', '20261025000100_relatorios_financeiros.js', '20261025000200_infinitepay_ativacao_controlada.js']);
+            assert.equal(applied[1].length, 10);
+            assert.deepEqual(applied[1].slice(-6), [migrationName, '20261024000100_checkout_sessoes.js', '20261025000100_relatorios_financeiros.js',
+                '20261025000200_infinitepay_ativacao_controlada.js','20261027000100_entregas_operacionais.js','20261027000200_infinitepay_identidade_ambiente.js']);
             const rows = await historical.db('metodos_pagamento').orderBy('id');
             assert.deepEqual(rows.map(({ id, nome, codigo, tipo_financeiro }) => ({ id, nome, codigo, tipo_financeiro })), approved);
             assert.equal((await historical.db('config_infinitepay').first()).ativo, false);
+            assert.equal((await historical.db('infinitepay_identidade_ambiente').first()).ambiente,'NAO_CONFIGURADO');
+            assert.equal(Number((await historical.db('infinitepay_entregas_operacionais').count('* as n').first()).n),0);
         } finally { await historical.close(); }
     });
     test('official Knex up rejects identity drift without recording the migration or partially changing classifications', async () => {

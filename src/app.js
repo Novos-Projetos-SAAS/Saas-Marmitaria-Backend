@@ -36,6 +36,7 @@ import { swaggerSpec } from './config/swagger.js';
 import cors from 'cors';
 
 import dotenv from 'dotenv';
+import { validateProductionEnvironment,configureProductionProxy } from './config/infinitepayProduction.js';
 dotenv.config();
 
 const app = express();
@@ -45,12 +46,14 @@ const app = express();
  * Isso permite que o Express identifique corretamente o IP original
  * utilizado pelo rate limiter.
  */
-if (process.env.NODE_ENV === 'production') {
+if(process.env.INFINITEPAY_MODE === 'production') {
+    configureProductionProxy(app,validateProductionEnvironment(process.env));
+} else if (process.env.NODE_ENV === 'production') {
     app.set('trust proxy', 1);
 }
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
-    ? process.env.ALLOWED_ORIGINS.split(',')
+    ? process.env.ALLOWED_ORIGINS.split(',').map(origin=>origin.trim()).filter(Boolean)
     : [];
 
 // 2. Atualização Importante no CORS

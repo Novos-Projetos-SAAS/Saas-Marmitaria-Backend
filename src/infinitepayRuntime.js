@@ -106,13 +106,14 @@ export function createInfinitepayRuntime({ db, checkoutClient, checkClient, pars
         else target.searchParams.set('ref', ref);
         return target.toString();
     }
-    async function processPending({ limit = 25 } = {}) {
+    async function processPending({ limit = 25, processEvents = true, processDeliveries = true } = {}) {
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new TypeError('Limite de processamento inválido.');
+        if(typeof processEvents !== 'boolean' || typeof processDeliveries !== 'boolean') throw new TypeError('Seleção de processamento inválida.');
         const result = { events: 0, deliveries: 0, errors: 0 };
         for (let i = 0; i < limit; i++) {
             let event, delivery;
-            try { event = await events.processNext(); if (event) result.events++; } catch { result.errors++; }
-            try { delivery = await outbox.processNext(); if (delivery) result.deliveries++; } catch { result.errors++; }
+            try { if(processEvents) event = await events.processNext(); if (event) result.events++; } catch { result.errors++; }
+            try { if(processDeliveries) delivery = await outbox.processNext(); if (delivery) result.deliveries++; } catch { result.errors++; }
             if (!event && !delivery) break;
         }
         return result;

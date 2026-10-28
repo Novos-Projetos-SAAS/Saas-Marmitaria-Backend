@@ -29,7 +29,11 @@ export function definirFluxoCriacao({ origem, metodo, habilitado, configAtiva })
     return 'POSTERIOR';
 }
 
-export function aplicarElegibilidadeOperacional(query) {
+export function aplicarElegibilidadeOperacional(query, { confirmedStates = ['PAGA', 'LIQUIDADA', 'ESTORNADA'] } = {}) {
+    if (!Array.isArray(confirmedStates) || !confirmedStates.length ||
+        confirmedStates.some(status => !['PAGA', 'LIQUIDADA', 'ESTORNADA'].includes(status))) {
+        throw new TypeError('Estados financeiros de elegibilidade inválidos.');
+    }
     return query.where(function () {
         this.where('pedidos.fluxo_pagamento', 'POSTERIOR').orWhere(function () {
             this.where('pedidos.fluxo_pagamento', 'INFINITEPAY')
@@ -37,7 +41,7 @@ export function aplicarElegibilidadeOperacional(query) {
                 .whereExists(function () {
                     this.select(1).from('pagamentos as financeiro')
                         .whereColumn('financeiro.pedido_id', 'pedidos.id')
-                        .whereIn('financeiro.status', ['PAGA', 'LIQUIDADA', 'ESTORNADA'])
+                        .whereIn('financeiro.status', confirmedStates)
                         .whereNotNull('financeiro.provider_verified_at')
                         .whereNotNull('financeiro.pago_em')
                         .whereRaw('LENGTH(BTRIM(??, ?)) > 0', ['financeiro.transaction_nsu', whitespaceIdentificador])

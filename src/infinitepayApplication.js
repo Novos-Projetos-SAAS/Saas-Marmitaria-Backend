@@ -4,6 +4,8 @@ import { parseObservedCreatedLink, parseObservedPaymentCheck, parseObservedInfin
 import { createInfinitepayRuntime, startInfinitepayProcessing } from './infinitepayRuntime.js';
 import { decryptApiKey } from './utils/infinitepayCredentials.js';
 import { providerOrigins } from './config/infinitepayProviderOrigins.js';
+import { validateProductionEnvironment } from './config/infinitepayProduction.js';
+import { initializeProductionApplication } from './infinitepayProductionApplication.js';
 
 function blocked() {
     return Object.assign(new Error('Ativação indisponível: valide os requisitos do ambiente de homologação.'),
@@ -16,6 +18,7 @@ function origin(value) {
     return url;
 }
 export function validateInfinitepayEnvironment(env = process.env) {
+    if(env.INFINITEPAY_MODE === 'production') return validateProductionEnvironment(env);
     try {
         if (!env.INFINITEPAY_MODE || env.INFINITEPAY_MODE === 'disabled') {
             if(env.INFINITEPAY_CHECKOUT_ENABLED === 'true') throw blocked();
@@ -40,9 +43,11 @@ export function validateInfinitepayEnvironment(env = process.env) {
     } catch { throw blocked(); }
 }
 
-export async function initializeInfinitepayApplication({ app, db, env = process.env, transport = globalThis.fetch, now = () => new Date() }) {
+export async function initializeInfinitepayApplication({ app, db, env = process.env, transport = globalThis.fetch, now = () => new Date(),
+    productionAuthorization,operationalAdapter }) {
     const config=validateInfinitepayEnvironment(env);
     if(!config) return { start(){},async stop(){},status:()=>({running:false,mode:'disabled'}) };
+    if(config.mode==='production') return initializeProductionApplication({app,db,env,config,transport,now,productionAuthorization,operationalAdapter});
     const origins=providerOrigins(env);
     if(origins.demo && (transport === globalThis.fetch || config.publicOrigin !== origins.checkoutOrigin)) throw blocked();
     // Validate the actual connection before issuing any database statement.
