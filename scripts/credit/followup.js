@@ -28,13 +28,13 @@ export async function describeExistingPayment({db,captureKey,publicOrigin,finger
         }
         return {publicOrigin,binding:{attempt_reference:bound.saved.approval.attempt_reference,context_sha256:digest(JSON.stringify(bound.context)),
             credential_sha256:digest(bound.apiKey),handle:bound.payment.handle_snapshot,amount_centavos:Number(bound.payment.valor_centavos),
-            ...(proof.payment_confirmed?{proof_sha256:await verification.evidenceFingerprint(trx)}:{})},
+            ...(proof.reconciliation_ready?{proof_sha256:await verification.evidenceFingerprint(trx)}:{})},
             report:{reserved:true,amount_centavos:Number(bound.payment.valor_centavos),attempt_status:bound.payment.status,
                 real_link_dispatches:await count(trx('pagamentos_eventos').where({event_key:H4.dispatch})),
                 real_check_dispatches:await count(trx('pagamentos_eventos').where({event_key:H4.check})),
                 checkout_enabled:(await trx('config_infinitepay').where({id:1}).first('ativo')).ativo,
                 credential_matches_attempt:digest(bound.apiKey)===fingerprint,identifiers_consistent:true,origin_preserved:true,
-                proof_confirmed:proof.payment_confirmed,check_result:proof,outbox_count:await count(trx('outbox_eventos').where({pedido_id:bound.payment.pedido_id,tipo:'PEDIDO_LIBERADO'})),
+                proof_confirmed:proof.payment_confirmed,reconciliation_ready:proof.reconciliation_ready,check_result:proof,outbox_count:await count(trx('outbox_eventos').where({pedido_id:bound.payment.pedido_id,tipo:'PEDIDO_LIBERADO'})),
                 financial_confirmation:Boolean(eligible && bound.payment.capture_method==='credit_card' && ['PAGA','LIQUIDADA'].includes(bound.payment.status)),
                 kitchen_released:eligible,events:{matched_webhooks:webhooks,matched_returns:returns,webhook_paid:paid,
                     pending_paid:await count(trx('pagamentos_eventos').where({tipo_evento:'paid',status_processamento:'PENDENTE'}).whereRaw("payload_filtrado->>'orderNsu'=?",[bound.expected.orderNsu]))}}};

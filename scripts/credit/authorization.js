@@ -83,7 +83,7 @@ function followupReady(inspection,operation) {
         !/^https:\/\/[a-z0-9-]+\.trycloudflare\.com$/.test(inspection.publicOrigin||''))throw refuse();
     if(operation==='CHECK_PAYMENT'){
         if(report.real_check_dispatches!==0 || !['AGUARDANDO','INCERTA'].includes(report.attempt_status) || report.proof_confirmed!==false || report.outbox_count!==0)throw refuse();
-    }else if(report.real_check_dispatches!==1 || report.proof_confirmed!==true ||
+    }else if(report.real_check_dispatches!==1 || report.proof_confirmed!==true || report.reconciliation_ready!==true ||
         (operation==='RECONCILE'?(!['AGUARDANDO','INCERTA'].includes(report.attempt_status) || report.outbox_count!==0):
             (!['PAGA','LIQUIDADA'].includes(report.attempt_status) || report.outbox_count!==1)))throw refuse();
 }

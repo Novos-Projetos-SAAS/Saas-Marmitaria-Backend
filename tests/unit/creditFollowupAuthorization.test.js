@@ -38,7 +38,8 @@ test('H4 does not register check approval after a consumed query budget or chang
 }));
 test('H4 reconciles and delivers only under distinct grants after independent proof and the corresponding stage',async()=>fixture(async directory=>{
     await assert.rejects(registerFollowupApproval(options(directory,'RECONCILE')));
-    const proven={...inspection,binding:{...inspection.binding,proof_sha256:'d'.repeat(64)},report:{...inspection.report,real_check_dispatches:1,proof_confirmed:true}};
+    const proven={...inspection,binding:{...inspection.binding,proof_sha256:'d'.repeat(64)},report:{...inspection.report,real_check_dispatches:1,proof_confirmed:true,reconciliation_ready:true}};
+    await assert.rejects(registerFollowupApproval({...options(directory,'RECONCILE',{...proven,report:{...proven.report,reconciliation_ready:false}}),confirm:()=>{throw new Error('MUST_NOT_PROMPT');}}));
     await registerFollowupApproval(options(directory,'RECONCILE',proven));
     const approval=await readPrivateApproval(directory,'RECONCILE');assert.equal(approval.proof_sha256,'d'.repeat(64));
     await assert.rejects(registerFollowupApproval(options(directory,'DELIVER',proven)));

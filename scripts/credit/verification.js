@@ -1,5 +1,5 @@
-import { createInfinitepayCheckClient, normalizedPayment } from '../../src/services/infinitepayCheckClient.js';
-import { parseObservedPaymentCheck, parseObservedInfinitepayEvent } from '../../src/services/infinitepayObservedContracts.js';
+import { createInfinitepayCheckClient } from '../../src/services/infinitepayCheckClient.js';
+import { parseObservedInfinitepayEvent } from '../../src/services/infinitepayObservedContracts.js';
 import { createInfinitepayEventsService } from '../../src/services/infinitepayEventsService.js';
 import { createPaymentOutboxService } from '../../src/services/paymentOutboxService.js';
 import { snapshot } from '../../src/services/paymentOrchestrator.js';
@@ -7,12 +7,10 @@ import { decryptApiKey } from '../../src/utils/infinitepayCredentials.js';
 import { H4, createCreditControl, authorizeCreditOperation, noSecret } from './control.js';
 import { openObservation, observeCredit, digest, readCreditBody } from './observations.js';
 import { assertFollowupBinding } from './authorization.js';
+import { creditProof, composeCreditEvidence } from './evidence.js';
+export { creditProof } from './evidence.js';
 
 const blocked=()=>new Error('Verificação H4 bloqueada. Preserve a tentativa e concilie sem nova cobrança.');
-export function creditProof(data,expected,amount) {
-    if(data?.success!==true || data.paid!==true || data.amount!==amount || data.capture_method!=='credit_card' || data.installments!==1 || !data.receipt_url)throw blocked();
-    return normalizedPayment(parseObservedPaymentCheck(data,expected),expected,new Set(['https://recibo.infinitepay.io']));
-}
 export function createCreditVerification({db,captureKey,publicOrigin,now=()=>new Date()}) {
     const control=createCreditControl({db,captureKey,publicOrigin,now});
     async function binding(trx=db) {
@@ -49,26 +47,44 @@ export function createCreditVerification({db,captureKey,publicOrigin,now=()=>new
             amount:Number(payment.valor_centavos),snapshot:order.client_payload_hash,expected};
         return {payment,saved,apiKey,expected,context};
     }
-    async function evidenceFingerprint(trx=db) {
-        const rows=await trx('pagamentos_eventos').where({tipo_evento:'H4_OBSERVACAO_PAYMENT_CHECK'});
-        if(rows.length!==1)throw blocked();
-        const observed=openObservation(rows[0].payload_filtrado,captureKey);
-        return digest(JSON.stringify({context:observed.context,status:observed.status,body:observed.body}));
-    }
-    async function result(reader) {
+    async function evidence(reader) {
         const read=async trx=>{
-            const observations=await trx('pagamentos_eventos').where({tipo_evento:'H4_OBSERVACAO_PAYMENT_CHECK'});
-            if(observations.length!==1)return {payment_confirmed:false,observation_only:true,reason:'CHECK_NOT_AVAILABLE'};
-            try{
-                const current=await binding(trx),observed=openObservation(observations[0].payload_filtrado,captureKey);
-                if(observed.status!==200 || digest(JSON.stringify(current.context))!==digest(JSON.stringify(observed.context)))throw blocked();
-                const proof=creditProof(JSON.parse(observed.body),current.expected,Number(current.payment.valor_centavos));noSecret(proof.receiptUrl,current.apiKey);
-                return {payment_confirmed:true,observation_only:true,amount:proof.amount,paid_amount:proof.paidAmount,capture_method:proof.captureMethod,
-                    installments:proof.installments,identifiers_compatible:true,receipt_available:true};
-            }catch{return {payment_confirmed:false,observation_only:true,reason:'EVIDENCE_INCOMPATIBLE'};}
+            const rows=await trx('pagamentos_eventos').where({tipo_evento:'H4_OBSERVACAO_PAYMENT_CHECK'});
+            if(rows.length!==1)throw Object.assign(blocked(),{code:'CHECK_NOT_AVAILABLE'});
+            const bound=await binding(trx),observed=openObservation(rows[0].payload_filtrado,captureKey);
+            const dispatch=await trx('pagamentos_eventos').where({event_key:H4.check}).first('pagamento_id');
+            if(observed.status!==200 || rows[0].pagamento_id!==bound.payment.id || dispatch?.pagamento_id!==bound.payment.id ||
+                digest(JSON.stringify(bound.context))!==digest(JSON.stringify(observed.context)))throw blocked();
+            const rawCallbacks=await trx('pagamentos_eventos').whereIn('tipo_evento',['H4_OBSERVACAO_WEBHOOK','H4_OBSERVACAO_RETURN']).orderBy('id');
+            const callbacks=[];
+            for(const row of rawCallbacks){
+                const raw=openObservation(row.payload_filtrado,captureKey);let parsed;
+                try{parsed=JSON.parse(raw.body);}catch{continue;}
+                if(parsed.order_nsu===bound.expected.orderNsu)callbacks.push({kind:row.tipo_evento.endsWith('RETURN')?'RETURN':'WEBHOOK',raw:parsed,
+                    reference:{id:row.id,hash:digest(JSON.stringify(row.payload_filtrado))}});
+            }
+            const composed=composeCreditEvidence({data:JSON.parse(observed.body),expected:bound.expected,amount:Number(bound.payment.valor_centavos),
+                callbacks,returnNonceHash:bound.payment.return_nonce_hash});
+            for(const url of [composed.financial.receiptUrl,composed.receipt.url])if(url)noSecret(url,bound.apiKey);
+            const manifest={contract:'H4_CREDIT_EVIDENCE_V2',context:bound.context,
+                financial:{event_id:rows[0].id,hash:digest(JSON.stringify(rows[0].payload_filtrado))},receipt:composed.receipt};
+            return {...composed,bound,fingerprint:digest(JSON.stringify(manifest))};
         };
         if(reader)return read(reader);
         return db.transaction(async trx=>{await trx.raw('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');return read(trx);});
+    }
+    async function evidenceFingerprint(reader) {
+        return (await evidence(reader)).fingerprint;
+    }
+    async function result(reader) {
+        try{
+            const composed=await evidence(reader),proof=composed.financial;
+            return {payment_confirmed:true,observation_only:true,amount:proof.amount,paid_amount:proof.paidAmount,capture_method:proof.captureMethod,
+                installments:proof.installments,identifiers_compatible:true,receipt_available:composed.receipt.status==='VALIDATED',
+                receipt_status:composed.receipt.status,reconciliation_ready:composed.reconciliationReady,evidence_sources:composed.sources,
+                provider_echo_fields:composed.providerEchoFields,receipt_validation:composed.receiptValidation,callback_signature_verified:composed.callbackSignatureVerified};
+        }catch(error){return {payment_confirmed:false,observation_only:true,reconciliation_ready:false,receipt_available:false,
+            reason:error.code==='CHECK_NOT_AVAILABLE'?'CHECK_NOT_AVAILABLE':'EVIDENCE_INCOMPATIBLE'};}
     }
     async function check({apiKey,authorization,confirmed,transport}) {
         if(typeof apiKey!=='string' || !/^[\x21-\x7E]{1,4096}$/.test(apiKey))throw blocked();
@@ -95,8 +111,8 @@ export function createCreditVerification({db,captureKey,publicOrigin,now=()=>new
     }
     async function approved(operation,authorization,confirmed) {
         const approval=authorizeCreditOperation(authorization,operation,{publicOrigin,now:now()});if(confirmed!==true)throw blocked();
-        const bound=await binding();if(approval.amount_centavos!==Number(bound.payment.valor_centavos) || approval.handle!==bound.payment.handle_snapshot ||
-            approval.credential_sha256!==digest(bound.apiKey) || !(await result()).payment_confirmed)throw blocked();
+        const bound=await binding(),evaluation=await result();if(approval.amount_centavos!==Number(bound.payment.valor_centavos) || approval.handle!==bound.payment.handle_snapshot ||
+            approval.credential_sha256!==digest(bound.apiKey) || !evaluation.payment_confirmed || !evaluation.reconciliation_ready)throw blocked();
         assertFollowupBinding(approval,bound,await evidenceFingerprint());
         return bound;
     }
@@ -104,11 +120,10 @@ export function createCreditVerification({db,captureKey,publicOrigin,now=()=>new
         const bound=await approved('RECONCILE',authorization,confirmed);
         const service=createInfinitepayEventsService({db,now,receiptOrigins:['https://recibo.infinitepay.io'],parseEvent:parseObservedInfinitepayEvent,
             client:{async checkPayment(request){
-                const current=await binding();if(request.apiKey!==current.apiKey || Object.keys(current.expected).some(key=>request[key]!==current.expected[key]))throw blocked();
-                const row=await db('pagamentos_eventos').where({tipo_evento:'H4_OBSERVACAO_PAYMENT_CHECK',pagamento_id:bound.payment.id}).first();
-                const observed=openObservation(row.payload_filtrado,captureKey);
-                if(digest(JSON.stringify(current.context))!==digest(JSON.stringify(observed.context)))throw blocked();
-                return {...creditProof(JSON.parse(observed.body),current.expected,current.context.amount),identifiers:current.expected};
+                const composed=await evidence(),current=composed.bound;
+                if(!composed.reconciliationReady || request.apiKey!==current.apiKey || Object.keys(current.expected).some(key=>request[key]!==current.expected[key]))throw blocked();
+                assertFollowupBinding(authorization,current,composed.fingerprint);
+                return {...composed.financial,...(composed.receipt.url?{receiptUrl:composed.receipt.url}:{}),identifiers:current.expected};
             }}});
         const event=await service.receiveReturn(bound.expected);await service.processEvent(event.eventId);
         return control.status();

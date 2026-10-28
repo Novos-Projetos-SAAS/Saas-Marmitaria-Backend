@@ -9,6 +9,11 @@ test('credit proof preserves provider paid amount separately from the original a
 for(const [name,patch]of [['missing success',{success:undefined}],['not successful',{success:false}],['not paid',{paid:false}],['wrong original amount',{amount:101}],
     ['negative paid amount',{paid_amount:-1}],['Pix instead of credit',{capture_method:'pix'}],['unexpected installments',{installments:2}],
     ['conflicting transaction',{transaction_nsu:'OTHER'}],['conflicting invoice',{slug:'OTHER'}],['unauthorized receipt',{receipt_url:'https://evil.invalid/SYNTHETIC-TX'}],
-    ['wrong receipt transaction',{receipt_url:'https://recibo.infinitepay.io/OTHER'}],['missing receipt',{receipt_url:undefined}]]){
+    ['wrong receipt transaction',{receipt_url:'https://recibo.infinitepay.io/OTHER'}]]){
     test('credit proof blocks '+name,()=>assert.throws(()=>creditProof({...proof,...patch},expected,100)));
 }
+test('credit financial proof accepts the observed payment_check response without manufacturing a receipt',()=>{
+    const observed={success:true,paid:true,amount:100,paid_amount:100,capture_method:'credit_card',installments:1};
+    const before=JSON.stringify(observed),valid=creditProof(observed,expected,100);
+    assert.equal(valid.paid,true);assert.equal(valid.receiptUrl,undefined);assert.equal(JSON.stringify(observed),before);
+});
