@@ -74,7 +74,7 @@ export function createProductionAuthorizer({db,env,now=()=>new Date(),sessionSec
         let actor,canAudit=false;
         try {await refresh();canAudit=true;actor=await administrator(request?.session);return await action(actor);}
         catch(error) {
-            if(canAudit) {try{await audit(db,operation,'DENY',error instanceof AuthorizationError?error.code:'ADMINISTRATION_FAILED',{userId:actor?.id});}catch{}}
+            if(canAudit && operation) {try{await audit(db,operation,'DENY',error instanceof AuthorizationError?error.code:'ADMINISTRATION_FAILED',{userId:actor?.id});}catch{}}
             throw new AuthorizationError(error instanceof AuthorizationError?error.code:'ADMINISTRATION_FAILED');
         }
     }
@@ -160,5 +160,23 @@ export function createProductionAuthorizer({db,env,now=()=>new Date(),sessionSec
             });
         });
     }
-    return {approve,authorize,revoke,emergencyStop};
+    async function status(request) {
+        return administrative(null,request,async()=>{
+            record(request,['session']);
+            const rows=await db('infinitepay_autorizacoes_producao').where({boot_id:bootId,implantacao_id:config.databaseId})
+                .orderBy('criado_em','desc').limit(100);
+            const approvals=[];
+            for(const row of rows) {
+                const effectiveCapabilities=[];
+                for(const operation of row.capacidades) {
+                    if(!row.revogado_em && new Date(row.expira_em)>time() && await authorize({operation,database:config.database,
+                        databaseId:config.databaseId,deploymentId:config.databaseId,environment:'production',publicOrigin:config.publicOrigin,
+                        credentialId:row.credencial_id,...(operation==='DELIVER_ORDER'?{destinationId:row.destino}:{})}))effectiveCapabilities.push(operation);
+                }
+                approvals.push({id:row.id,expiresAt:new Date(row.expira_em).toISOString(),revoked:Boolean(row.revogado_em),effectiveCapabilities});
+            }
+            return {halted,policy:{defaultSeconds:300,maxSeconds:900,sessionBound:true,processBound:true,automaticRenewal:false},approvals};
+        });
+    }
+    return {approve,authorize,revoke,emergencyStop,status};
 }

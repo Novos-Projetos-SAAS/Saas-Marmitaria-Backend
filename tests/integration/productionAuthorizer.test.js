@@ -177,4 +177,51 @@ test('changing an adapter identity cannot reuse a newly approved recipient for t
         await assert.rejects(service.start({intervalMs:60000}));assert.equal(sends,0);
     }finally{await service?.stop();}
 });
+test('session expiry blocks future decisions even when a longer grant was requested',async()=>{
+    const a=authorizer(),seconds=clock.getTime()/1000,token=jwt.sign({id:actor.id,iat:seconds,exp:seconds+2},secret);
+    await a.approve({session:{...session,token,csrf:createHmac('sha256',secret).update('infinitepay-csrf-v1\0'+token).digest('base64url')},capabilities:['WORKER'],validForSeconds:900});
+    assert.equal(await a.authorize(context('WORKER')),true);clock=new Date(clock.getTime()+2000);
+    assert.equal(await a.authorize(context('WORKER')),false);
+    assert.equal(Number((await db('infinitepay_autorizacoes_producao').count('* as n').first()).n),1);
+});
+test('capability is a bounded policy, not a reusable one-shot financial reservation',async()=>{
+    const a=authorizer();await approve(a);
+    assert.equal(await a.authorize(context('VERIFY_PAYMENT')),true);assert.equal(await a.authorize(context('VERIFY_PAYMENT')),true);
+    assert.equal(await authorizer().authorize(context('VERIFY_PAYMENT')),false);
+    assert.equal(Number((await db('infinitepay_autorizacoes_producao').count('* as n').first()).n),1);
+});
+test('audit failure during revocation or emergency stop still denies this process',async()=>{
+    const a=authorizer(),grant=await approve(a);
+    await db.raw("CREATE FUNCTION synthetic_stop_audit_failure() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'SYNTHETIC'; END $$");
+    await db.raw('CREATE TRIGGER synthetic_stop_audit_failure BEFORE INSERT ON infinitepay_autorizacao_decisoes FOR EACH ROW EXECUTE FUNCTION synthetic_stop_audit_failure()');
+    await assert.rejects(a.revoke({session,id:grant.id}));assert.equal(await a.authorize(context('WORKER')),false);
+    assert.equal((await db('infinitepay_autorizacoes_producao').where({id:grant.id}).first()).revogado_em,null);
+    await assert.rejects(a.emergencyStop({session}));await assert.rejects(approve(a));
+    assert.equal(await authorizer().authorize(context('WORKER')),false);
+});
+test('revocation during an in-flight simulated check preserves its result but blocks further dispatch and delivery',async()=>{
+    const a=authorizer(),grant=await approve(a);let service,dispatches=0,release;
+    const pending=new Promise(resolve=>release=resolve);
+    try {
+        const [method]=await db('metodos_pagamento').insert({nome:'SYNTHETIC PIX',codigo:'PIX',tipo_financeiro:'PIX'}).returning('*');
+        const [order]=await db('pedidos').insert({nome_cliente:'SYNTHETIC',telefone_cliente:'00000000000',tipo_pedido:'Remoto',metodo_entrega:'Retirada',
+            fluxo_pagamento:'INFINITEPAY',metodo_pagamento_id:method.id,valor_total:1}).returning('*');
+        const [payment]=await db('pagamentos').insert({pedido_id:order.id,tentativa_numero:1,order_nsu:'SYNTHETIC-IN-FLIGHT',status:'INCERTA',
+            valor_centavos:100,valid_until:'2050-01-01T00:00:00Z',credencial_id:credential.id,handle_snapshot:credential.handle}).returning('*');
+        Object.assign(env,{INFINITEPAY_WORKER_ENABLED:'true',INFINITEPAY_VERIFY_ENABLED:'true'});
+        service=await application(a,async()=>{dispatches++;await pending;
+            return {status:200,json:async()=>({success:true,paid:true,amount:100,paid_amount:100,installments:1,capture_method:'pix'})};});
+        await service.runtime.receiveEvent({event_type:'paid',order_nsu:payment.order_nsu,transaction_nsu:'SYNTHETIC-IN-FLIGHT-TXN',invoice_slug:'SYNTHETIC-IN-FLIGHT-SLUG'});
+        await service.start({intervalMs:60000});
+        for(let n=0;n<200 && dispatches===0;n++)await new Promise(resolve=>setTimeout(resolve,10));
+        assert.equal(dispatches,1);assert.equal((await db('pagamentos').where({id:payment.id}).first()).status,'INCERTA');
+        await a.revoke({session,id:grant.id});release();
+        for(let n=0;n<200 && service.status().cycles===0;n++)await new Promise(resolve=>setTimeout(resolve,10));
+        assert.ok(service.status().cycles>0);
+        assert.equal((await db('pagamentos').where({id:payment.id}).first()).status,'PAGA');
+        assert.equal((await db('outbox_eventos').where({pedido_id:order.id}).first()).status,'PENDENTE');
+        assert.deepEqual(await service.runtime.processPending(),{events:0,deliveries:0,errors:0});assert.equal(dispatches,1);
+        assert.equal(service.status().consumer,'unconfigured');
+    }finally{release?.();await service?.stop();}
+});
 });

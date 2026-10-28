@@ -132,6 +132,58 @@ O caminho atual Socket.IO/NotificationListener/QZ não devolve recibo durável a
 
 Continuam pendentes a instalação autorizada do controle administrativo, destino real, contratos externos InfinitePay, infraestrutura e homologação operacional. A documentação InfinitePay consultada em 28/10/2026 continua sem contrato suficiente de assinatura de webhook, idempotência externa e recuperação após perda de resposta; nenhum mecanismo foi inventado. Nenhum worker real ou checkout comercial foi ativado. As três migrations 20261027 permanecem não aplicadas aos bancos certificados.
 
+### Controle administrativo preparado (Fase 5D.3, inativo)
+
+`createProductionControlRouter({authorizer})`, em `src/routes/InfinitepayProductionControl.Routes.js`, é uma fábrica sem efeito de instalação. Nenhum import/mount foi acrescentado à composição, nenhuma variável a instala e nenhuma permissão é atribuída automaticamente. Não há interface de ativação no Frontend. Os caminhos abaixo são **relativos ao módulo não montado**, não URLs disponíveis no servidor:
+
+| Método / caminho relativo | Contrato JSON | Efeito permitido |
+|---|---|---|
+| GET `/` | sem corpo | Estado da instância e até 100 aprovações mais recentes desse boot: ID administrativo, validade, revogação e capacidades efetivamente válidas. Não expõe hashes, credenciais ou tokens. |
+| POST `/approvals` | `{capabilities,validForSeconds?,credentialId?,destinationId?}` | Persiste aprovação e auditoria na mesma transação; retorna 201. Não liga flags nem inicia worker. |
+| POST `/revocations` | `{id}` | Revoga aprovação da instalação, preservando histórico; retorna 200 e `revoked` booleano. Não aceita ID de outro ambiente como sucesso. |
+| POST `/emergency-stop` | `{}` | Revoga aprovações da instalação e bloqueia novas aprovações na instância; retorna 200 somente após persistência. Não promete cancelar operações externas em trânsito. |
+
+Respostas usam `{status:'success',data}` ou erro com código fixo, `Cache-Control:no-store` e `Referrer-Policy:no-referrer`. É exigido HTTPS; sessão vem exclusivamente de `cookies.token`, Origin do header e CSRF de `X-Infinitepay-CSRF`, inclusive na consulta. O serviço confere JWT HS256, usuário/nível ativos e permissão explícita `pagamentos.ativar_producao`, sem bypass pelo nome do cargo. Escritas exigem application/json e corpo restrito; campos de sessão, implantação e banco no JSON são rejeitados. O parser próprio limita a 8KiB; o proxy e qualquer parser anterior também deverão limitar requisições na futura instalação. Erros de autenticação/autorização são 403, corpo inválido 400, mídia 415, excesso 413 e indisponibilidade de controle/persistência 503. Não há logs de request, headers ou exceções livres neste módulo.
+
+`authorizer.status({session})` revalida capacidades com a política existente, incluindo HMAC, credencial e auditoria obrigatória de cada decisão avaliada. Consulta não gera aprovação, operação financeira ou renovação. Não é uma consulta ao estado bancário nem prova de que um worker esteja rodando. Falhas de autenticação da consulta não geram uma nova categoria de auditoria; aprovações, revogações e decisões de capacidade usam as tabelas já existentes. Nenhuma migration foi necessária.
+
+A montagem futura exige composição explícita revisada, `configureProductionProxy` antes das rotas, IPs exatos do proxy, Host/HTTPS encaminhados validados, cookies seguros e rate limiting existente. O router não estabelece confiança em headers por conta própria. A emissão inicial do CSRF precisa usar o mecanismo autenticado existente: hoje a leitura da configuração financeira o fornece a quem também possui `pagamentos.configurar`. Um administrador com somente `pagamentos.ativar_producao` precisará de bootstrap autenticado aprovado antes da instalação, sem fornecer segredo JWT ao navegador. Não foi criada autenticação paralela. Logout do navegador não revoga criptograficamente um JWT já emitido: neste modelo a validade é conferida por expiração, chave de sessão e estado/permissão no banco; revogação imediata de sessão individual exigiria contrato próprio.
+
+#### Continuidade: política conservada e decisão ainda necessária
+
+O contrato atual é adequado a uma janela supervisionada de homologação, não a um turno comercial sem intervenção. Permanece padrão de cinco minutos, máximo quinze e nunca além do JWT. Não há renovação automática nem aprovação permanente. A identidade persistente representa a instalação; a aprovação é adicionalmente vinculada ao boot e não sobrevive à reconstrução do autorizador. As quatro capacidades não se implicam entre si.
+
+| Nível | Regra atual / condição futura |
+|---|---|
+| Aprovação da implantação | Declaração administrativa para banco, origem e credencial exatos; não é implantação/deploy nem habilita flags. |
+| Capacidade operacional | WORKER, CREATE_LINK, VERIFY_PAYMENT e DELIVER_ORDER independentes, com validade e destino quando aplicável. Flags continuam sendo outro bloqueio. |
+| Operação individual | Requer política válida no despacho e os registros/idempotência próprios da tentativa ou entrega. A aprovação de capacidade não é um voucher de uso único. |
+| Expiração | Novas decisões negadas, sem renovar ou limpar reservas. Callbacks podem ser persistidos, mas a consulta independente aguarda nova autorização VERIFY_PAYMENT/WORKER. Links externos existentes podem continuar pagáveis. |
+| Revogação | Bloqueia decisões seguintes; não desfaz prova financeira recebida de uma consulta já autorizada e enviada. Uma resposta válida em trânsito pode confirmar e gerar outbox lógica; entrega física segue separadamente bloqueada. |
+| Emergência | Revogação persistida e bloqueio na instância; supervisão deve drenar/parar processos e observar resultados em trânsito. Não é cancelamento de cobrança no provedor. |
+| Reinício | Flags não são aprovação; sem uma nova aprovação explícita, nenhuma capacidade é herdada. Começar com flags desligadas, validar identidade, revisar pendências e obter aprovação antes de start. |
+
+Alternativas **para decisão do operador, não implementadas**: (A) conservar as janelas curtas com renovação humana explícita e aceitar pausas de verificação/entrega; (B) separar uma aprovação de implantação com prazo de turno definido de leases curtos de capacidade, supervisão/heartbeat e revogação durável, mantendo nova aprovação após reinício. B exige definir prazo máximo, responsáveis, quórum, tratamento de sessão expirada, capacidades de drenagem e parada entre instâncias; requer mudança revisada do contrato/schema, nunca simplesmente aumentar TTL ou ignorar JWT. Nenhuma capacidade deve continuar implicitamente após a sessão sob a política atual. Ativação comercial permanece bloqueada até aprovação da política, bootstrap CSRF, instalação revisada e ensaio de recuperação.
+
+Limites comprovados pelos testes: auditoria indisponível impede aprovação/uso; em revogação/parada com falha de persistência o processo nega localmente, mas não pode alegar que a mudança foi propagada/durável. É necessário tratar o 503 e supervisionar a parada. HMAC por boot não é trilha inviolável contra administrador do banco/host; auditoria externa/retentiva e exclusão mútua operacional entre réplicas continuam decisões de implantação. Nenhum software local garante cancelamento de HTTP ou impressão já enviada; reconciliação preserva evidências e nunca reenvia automaticamente uma cobrança incerta.
+
+#### Contrato para o futuro destino operacional real
+
+O envelope mínimo versionado e o consumidor durável existentes continuam sendo a base. É necessário escolher e homologar transporte, autenticação entre serviços/estações, destinatário/implantação, retenção da deduplicação e responsável operacional antes de construir o adaptador real. Não conectar o emit legado diretamente à outbox como se fosse recibo.
+
+| Etapa | Evidência e recuperação exigidas do destino real |
+|---|---|
+| Financeiramente liberado | Prova independente válida, PAGA/LIQUIDADA com valor/identificadores vinculados à mesma tentativa; não aceitar somente webhook/redirect. Estorno continua um estado distinto, não libera nova entrega. |
+| Entrega lógica | Outbox única e chave persistente por pedido; envelope com versão, implantação, destinatário, pedido e chave. Não incluir credenciais financeiras. |
+| Envio | Lease/fencing e autorização válidos; registrar tentativa antes do envio, reutilizando a mesma chave. |
+| Recebimento durável | Destino grava atomicamente chave, correlação e resultado antes de responder; recibo autenticado e verificável, consultável depois de reiniciar e sem novo efeito em repetição. |
+| Timeout / falha | INCERTA não significa ausência de recebimento. Consultar recibo; só repetir com ausência confirmada e idempotência comprovada, sem recriar cobrança. |
+| Recuperação | Consultar pela chave persistente; o receptor deve conservar deduplicação/recibo por prazo aprovado, inclusive em reinstalação ou troca de estação. Resolver divergências sob supervisão. |
+| Confirmação do funcionário | Ação separada, autenticada e persistida com usuário ativo, papel/permissão operacional, pedido/chave e horário; não equivale a aprovação financeira nem autoriza reimprimir automaticamente. O formato ainda precisa de aprovação. |
+| Impressão física | Estado independente e somente quando houver prova por trabalho/modelo/versão efetivamente homologada. Não usar resolução de qz.print, ack Socket.IO ou clique humano como prova de saída física. |
+
+Socket.IO atual não retorna recibo durável ao Backend, e a deduplicação do NotificationListener é volátil. Uma futura decisão sobre receptor central ou estação responsável deverá evitar duas estações imprimirem o mesmo trabalho e definir reimpressão manual autorizada. Testes continuam exclusivamente no receptor sintético; HMAC/recebimento sintético não certificam impressora real. O plano QZ separado contém o diagnóstico e as medidas propostas para autorização posterior.
+
 ## Demonstração local persistente (sem dinheiro real)
 
 O launcher `scripts/infinitepay-demo.ps1` usa PowerShell 7.2+, Node, PostgreSQL18 e o OpenSSL do Git já instalados nesta máquina. Reutiliza **127.0.0.1:55439/infinitepay_phase1_test**, criando somente o schema persistente **infinitepay_demo**. Os testes automáticos continuam usando seus próprios schemas descartáveis. Não acessa H1/55440 ou produção. `Prepare` aplica somente migrations pendentes nesse schema identificado e inicializa dados uma vez, sem apagar registros, executar seeds destrutivos ou redefinir configurações a cada início.
