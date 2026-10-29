@@ -1,5 +1,7 @@
 import express from 'express';
 import cookieParser from 'cookie-parser';
+import connection from './database/connection.js';
+import { createApplicationHealthRouter } from './routes/ApplicationHealth.Routes.js';
 
 import { limitadorGeral } from './middlewares/rateLimiter.js';
 
@@ -40,6 +42,8 @@ import { validateProductionEnvironment,configureProductionProxy } from './config
 dotenv.config();
 
 const app = express();
+// Public platform probes expose no financial state and perform no mutation.
+app.use('/health',createApplicationHealthRouter({db:connection}));
 
 /**
  * A aplicação em produção fica atrás do proxy reverso da hospedagem.

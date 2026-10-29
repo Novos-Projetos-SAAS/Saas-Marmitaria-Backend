@@ -26,7 +26,7 @@ export function receiptMatchesTransaction(value, transaction, origins = ['https:
 }
 
 export function parseObservedInfinitepayEvent(raw, { receiptOrigins = ['https://recibo.infinitepay.io'] } = {}) {
-    if (!raw || Array.isArray(raw) || typeof raw !== 'object' || !['created', 'paid', 'settled'].includes(raw.event_type)) {
+    if (!raw || Array.isArray(raw) || typeof raw !== 'object' || !['created', 'paid', 'settled', 'refunded'].includes(raw.event_type)) {
         throw new Error('Contrato de evento InfinitePay não homologado.');
     }
     const identifier = (value, limit) => {
@@ -36,6 +36,7 @@ export function parseObservedInfinitepayEvent(raw, { receiptOrigins = ['https://
         return value;
     };
     const invoiceSlug = identifier(Object.hasOwn(raw, 'invoice_slug') ? raw.invoice_slug : raw.slug, 255);
+    if(raw.event_type==='refunded')identifier(raw.transaction_nsu,255);
     if (raw.slug !== undefined && identifier(raw.slug, 255) !== invoiceSlug) throw new Error('Identificadores de fatura divergentes.');
     return { type: raw.event_type, orderNsu: identifier(raw.order_nsu, 120), invoiceSlug,
         ...(raw.transaction_nsu !== undefined ? { transactionNsu: identifier(raw.transaction_nsu, 255) } : {}),

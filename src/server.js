@@ -1,5 +1,6 @@
 import { validateInfinitepayEnvironment } from './infinitepayApplication.js';
 import { initializeServerFinancial } from './infinitepayServerComposition.js';
+import { productionSocketAllowed, configureProductionSocket } from './config/infinitepayProduction.js';
 
 import chalk from 'chalk';
 import logSymbols from 'log-symbols';
@@ -27,6 +28,7 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
 const httpServer = createServer(app);
 
 const io = new Server(httpServer, {
+    ...(financialEnvironment?.mode==='production'?{allowRequest:(req,done)=>done(null,productionSocketAllowed(req,financialEnvironment,allowedOrigins))}:{}),
     cors: {
         origin: allowedOrigins,
         methods: ['GET', 'POST'],
@@ -41,6 +43,7 @@ const io = new Server(httpServer, {
  * Somente transmite informações públicas, como abertura e fechamento da loja.
  * Não fornece acesso aos eventos administrativos de pedidos.
  */
+if(financialEnvironment?.mode==='production')configureProductionSocket(io,financialEnvironment,allowedOrigins);
 const publicIo = io.of('/publico');
 global.publicIo = publicIo;
 
@@ -77,16 +80,16 @@ io.use(async (socket, next) => {
 
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-        const usuario = await connection('usuarios')
-            .where({ id: decoded.id, ativo: true })
-            .whereNull('deletado_em')
-            .first('id');
+        const usuario = await connection('usuarios as u').join('niveis_acesso as n','n.id','u.nivel_acesso_id')
+            .where({ 'u.id': decoded.id, 'u.ativo': true, 'n.ativo':true })
+            .whereNull('u.deletado_em')
+            .first('u.id','u.nome','n.nome as cargo');
 
         if (!usuario) {
             return next(new Error('Usuário não autorizado'));
         }
 
-        if (String(decoded.cargo).toLowerCase() !== 'admin') {
+        if (String(usuario.cargo).toLowerCase() !== 'admin') {
             const permissao = await connection('permissoes_usuarios as pu')
                 .join('permissoes as p', 'p.id', '=', 'pu.permissao_id')
                 .where('pu.usuario_id', decoded.id)
@@ -100,8 +103,8 @@ io.use(async (socket, next) => {
 
         socket.usuario = {
             id: decoded.id,
-            nome: decoded.nome,
-            cargo: decoded.cargo
+            nome: usuario.nome,
+            cargo: usuario.cargo
         };
 
         next();
@@ -138,7 +141,7 @@ try {
     financial = await initializeServerFinancial({ app, db: connection, io, loadOrder: buscarPedidoCompletoPorId });
     await new Promise((resolve, reject) => {
         httpServer.once('error', reject);
-        httpServer.listen(PORT, financialEnvironment ? '127.0.0.1' : undefined, resolve);
+        httpServer.listen(PORT, financialEnvironment ? (financialEnvironment.bindHost || '127.0.0.1') : undefined, resolve);
     });
     await financial.start();
     console.log(`\n${logSymbols.success} ${chalk.cyan(`API rodando na porta ${httpServer.address().port}`)}`);

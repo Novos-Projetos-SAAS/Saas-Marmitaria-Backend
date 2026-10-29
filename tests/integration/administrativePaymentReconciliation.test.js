@@ -153,4 +153,18 @@ describe('authenticated administrative reconciliation schedules existing evidenc
         const unverified=await order('PAGA');assert.equal((await reconcile(unverified)).status,409);
         const awaiting=await order('AGUARDANDO');assert.equal((await reconcile(awaiting)).status,409);
     });
+test('manual refund API requires explicit permission, HTTPS and write CSRF without granting anything',async()=>{
+    const x=await order(),path='/'+x.pedido.id+'/estornos';
+    const [permission]=await db('permissoes').insert({nome:'pagamentos.estornar',descricao:'Synthetic explicit only'}).returning('*');
+    assert.equal((await request(path)).status,403);
+    await db('permissoes_usuarios').insert({usuario_id:1,permissao_id:permission.id});
+    assert.equal((await request(path,{id:2})).status,403);
+    const response=await request(path);assert.equal(response.status,200);assert.equal((await response.json()).data.estado,'SEM_SOLICITACAO');
+    const body={request_id:randomUUID(),motivo:'OUTRO'};
+    assert.equal((await request(path,{method:'POST',body})).status,403);
+    assert.equal((await request(path,{headers:{'X-Forwarded-Proto':'http'}})).status,403);
+    const valid=await request(path,{method:'POST',body,headers:{Origin:origin,'X-Infinitepay-CSRF':infinitepaySessionCsrf(token(1),secret)}});
+    assert.equal(valid.status,409,'an unconfirmed payment cannot request a refund');
+    assert.equal((await db('pagamentos').where({id:x.payment.id}).first()).status,'INCERTA');
+});
 });

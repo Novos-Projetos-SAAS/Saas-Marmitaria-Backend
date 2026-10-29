@@ -14,7 +14,7 @@ export async function initializeProductionApplication({app,db,env,config,transpo
         if(!await db.schema.hasTable(table)) throw productionBlocked();
     const context=Object.freeze({database:config.database,databaseId:config.databaseId,publicOrigin:config.publicOrigin,environment:'production',deploymentId:config.databaseId});
     const destinationId=operationalAdapter?.id;
-    let worker,running=false,starting,generation=0,cycles=0,errors=0;
+    let worker,running=false,starting,generation=0,cycles=0,errors=0,lastCycleAt=null,startedAt=null,lastCycleErrors=0;
     const flag=operation=>({CREATE_LINK:'INFINITEPAY_CHECKOUT_ENABLED',VERIFY_PAYMENT:'INFINITEPAY_VERIFY_ENABLED',
         DELIVER_ORDER:'INFINITEPAY_DELIVERY_ENABLED',WORKER:'INFINITEPAY_WORKER_ENABLED'})[operation];
     async function permitted(operation,{credentialId}={}) {
@@ -117,7 +117,13 @@ export async function initializeProductionApplication({app,db,env,config,transpo
             if(!historical)throw productionBlocked();
         }
         if(epoch!==generation || env.INFINITEPAY_WORKER_ENABLED!=='true') throw productionBlocked();
-        worker=startInfinitepayProcessing(runtime,{...options,onCycle:r=>{cycles++;errors+=r.errors || 0;}});
+        worker=startInfinitepayProcessing(runtime,{...options,onCycle:r=>{
+            cycles++;const current=Number.isSafeInteger(r.errors) && r.errors>=0?r.errors:1;errors+=current;lastCycleAt=now().toISOString();
+            if(current && !lastCycleErrors)console.warn('INFINITEPAY_CYCLE_ERROR',{errors:current});
+            if(!current && lastCycleErrors)console.info('INFINITEPAY_CYCLE_RESUMED');
+            lastCycleErrors=current;
+        }});
+        startedAt=now().toISOString();
         running=true;
     }
     // Reuse only the original outbox acknowledgement, with no dispatch fallback.
@@ -152,7 +158,7 @@ export async function initializeProductionApplication({app,db,env,config,transpo
             try{await starting;}finally{starting=undefined;}
         },
         async stop(){generation++;running=false;await starting?.catch(()=>{});const previous=worker;worker=undefined;await previous?.stop();},
-        status:()=>({mode:'production',prepared:true,running,consumer:consumer?'operational-adapter':'unconfigured',cycles,errors})};
+        status:()=>({mode:'production',prepared:true,running,consumer:consumer?'operational-adapter':'unconfigured',cycles,errors,lastCycleAt,lastCycleErrors,startedAt})};
     app.locals.infinitepayRuntime=runtime;app.locals.infinitepayActivation=service;
     return service;
 }

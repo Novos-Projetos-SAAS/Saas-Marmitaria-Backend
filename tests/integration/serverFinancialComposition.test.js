@@ -59,11 +59,14 @@ test('mounted diagnostics require actor and csrf, report age/divergence and neve
     const text=await response.text(),data=JSON.parse(text).data;
     assert.equal(data.commercialReady,false);assert.equal(data.financial.divergent,0);assert.equal(data.financial.uncertainOverdue,0);
     assert.equal(data.financial.oldestUncertainAt,null);assert.doesNotMatch(text,/SYNTHETIC_KEY|api_key|receipt_url|transaction_nsu/);
+    assert.ok(Array.isArray(data.alerts));assert.equal(data.supervision.automaticRenewal,false);assert.deepEqual(data.supervision.missingCapabilities,[]);
     assert.equal((await request(control+'/diagnostico')).status,403);
 });
 test('worker awaits an explicit approval after boot; authenticated start and stop do not enable checkout',async()=>{
     env.INFINITEPAY_WORKER_ENABLED='true';env.INFINITEPAY_VERIFY_ENABLED='true';
     await service.start();assert.equal(service.status().running,false);
+    const observed=await request(control+'/diagnostico',{csrf:await csrf()});const blocked=(await observed.json()).data;
+    assert.ok(blocked.alerts.some(a=>a.code==='AUTHORIZATION_REQUIRED'));assert.ok(blocked.alerts.some(a=>a.code==='WORKER_STOPPED'));
     assert.equal((await request(control+'/worker/start',{method:'POST',body:{}})).status,403);
     const csrfToken=await csrf();
     assert.equal((await request(control+'/worker/start',{method:'POST',body:{},csrf:csrfToken})).status,503);

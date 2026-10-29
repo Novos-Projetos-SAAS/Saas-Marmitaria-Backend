@@ -7,6 +7,7 @@ import { aplicarElegibilidadeOperacional } from '../utils/pedidoPaymentPolicy.js
 import { validatedReceipt, availableReceiptOrders } from '../services/checkoutSessionService.js';
 import { financialHttpError } from '../infinitepayRuntime.js';
 import { createAdministrativePaymentReconciliation } from '../services/administrativePaymentReconciliation.js';
+import { createManualRefundService } from '../services/manualRefundService.js';
 
 const router = Router();
 router.use((req, res, next) => { res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' }); next(); });
@@ -15,18 +16,31 @@ router.get('/csrf',checkPermission('pagamentos.visualizar'),(req,res)=>{
     if(!req.secure)throw financialHttpError(403);
     res.json({status:'success',csrf_token:csrfToken(req)});
 });
-router.post('/:id/conciliar',(req,res,next)=>{
+function httpsOrigin(req,res,next) {
     if(!req.secure)throw financialHttpError(403);
     let origin;
     try{origin=new URL(req.get('Origin'));}catch{throw financialHttpError(403);}
     if(origin.protocol!=='https:' || origin.origin!==req.get('Origin'))throw financialHttpError(403);
     next();
-},protectInfinitepayWrite,async(req,res)=>{
+}
+router.post('/:id/conciliar',httpsOrigin,protectInfinitepayWrite,async(req,res)=>{
     if(!/^[1-9]\d{0,9}$/.test(req.params.id))throw financialHttpError(404);
     const service=createAdministrativePaymentReconciliation({db:connection});
     const data=await service.request({pedidoId:Number(req.params.id),actorId:req.usuario.id,input:req.body});
     res.json({status:'success',data});
 });
+router.get('/:id/estornos',async(req,res)=>{
+    if(!req.secure || !/^[1-9]\d{0,9}$/.test(req.params.id))throw financialHttpError(403);
+    const data=await createManualRefundService({db:connection}).inspect({pedidoId:Number(req.params.id),actorId:req.usuario.id});
+    res.json({status:'success',data});
+});
+for(const [path,action] of [['/:id/estornos','request'],['/:id/estornos/:estornoId/execucao','execute'],['/:id/estornos/:estornoId/conciliar','reconcile']]) {
+    router.post(path,httpsOrigin,protectInfinitepayWrite,async(req,res)=>{
+        if(!/^[1-9]\d{0,9}$/.test(req.params.id))throw financialHttpError(404);
+        const data=await createManualRefundService({db:connection})[action]({pedidoId:Number(req.params.id),estornoId:req.params.estornoId,actorId:req.usuario.id,input:req.body});
+        res.json({status:'success',data});
+    });
+}
 router.get('/',checkPermission('pagamentos.visualizar'), async (req, res) => {
     const rows = await connection('pedidos').where({ fluxo_pagamento: 'INFINITEPAY' }).whereNull('deletado_em')
         .select('pedidos.id as pedido_id', 'nome_cliente', 'valor_total', 'status as pedido_status', 'criado_em')

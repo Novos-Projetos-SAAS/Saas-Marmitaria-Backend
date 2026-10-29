@@ -24,6 +24,8 @@ export function validateProductionEnvironment(env) {
         if(!allowed.includes(publicOrigin) || !allowed.includes(success.origin) ||
             !(env.ALLOWED_ORIGINS || '').split(',').map(v=>v.trim()).includes(success.origin)) fail();
         const proxies=(env.INFINITEPAY_TRUSTED_PROXY_IPS || '').split(',').map(v=>v.trim());
+        const bindHost=env.INFINITEPAY_BIND_HOST || '127.0.0.1';
+        if(!['127.0.0.1','0.0.0.0'].includes(bindHost))fail();
         if(!proxies.length || proxies.some(v=>!isIP(v) || ['0.0.0.0','::'].includes(v))) fail();
         let database=env.DB_NAME, host=env.DB_HOST, port=Number(env.DB_PORT || 5432);
         if(env.DATABASE_URL) {
@@ -35,7 +37,7 @@ export function validateProductionEnvironment(env) {
         for(const key of ['INFINITEPAY_CHECKOUT_ENABLED','INFINITEPAY_WORKER_ENABLED','INFINITEPAY_VERIFY_ENABLED','INFINITEPAY_DELIVERY_ENABLED'])
             if(env[key]!==undefined && !['true','false',''].includes(env[key])) fail();
         return {mode:'production',database,databaseId:env.INFINITEPAY_DATABASE_ID.toLowerCase(),host,port,
-            publicOrigin,successUrl:success.href,proxies};
+            publicOrigin,successUrl:success.href,proxies,bindHost};
     } catch { throw productionBlocked(); }
 }
 export async function assertProductionDatabase(db,config) {
@@ -61,15 +63,25 @@ export function configureProductionProxy(app,config) {
     app.set('trust proxy',(address,hop)=>hop===0 && trusted.has(ip(address)));
     app.use((req,res,next)=>{
         // One verified hop. The edge must overwrite these headers, never append client input.
-        const forwarded=req.get('X-Forwarded-For');
-        if(!trusted.has(ip(req.socket.remoteAddress)) || req.get('Host')!==new URL(config.publicOrigin).host ||
-            req.get('X-Forwarded-Proto')!=='https' || !isIP(forwarded || '') ||
-            req.get('Forwarded') || (req.get('X-Forwarded-Host') && req.get('X-Forwarded-Host')!==req.get('Host'))) {
+        if(!productionRequestAllowed(req,config)) {
             return res.status(403).json({status:'fail',message:'Proxy não autorizado.'});
         }
         next();
     });
     app.locals.infinitepayProductionProxy=JSON.stringify([config.publicOrigin,config.proxies]);
+}
+export function productionRequestAllowed(req,config) {
+    const h=req.headers || {},forwarded=h['x-forwarded-for'];
+    return config.proxies.map(ip).includes(ip(req.socket?.remoteAddress)) && h.host===new URL(config.publicOrigin).host &&
+        h['x-forwarded-proto']==='https' && typeof forwarded==='string' && isIP(forwarded)!==0 &&
+        !h.forwarded && (!h['x-forwarded-host'] || h['x-forwarded-host']===h.host);
+}
+export function productionSocketAllowed(req,config,origins) {
+    return productionRequestAllowed(req,config) && typeof req.headers.origin==='string' && origins.includes(req.headers.origin);
+}
+export function configureProductionSocket(io,config,origins) {
+    // Engine.IO bypasses Express, including polling/upgrade of an existing sid.
+    io.engine.use((req,res,next)=>productionSocketAllowed(req,config,origins)?next():next(new Error('Proxy não autorizado.')));
 }
 export function productionProxyConfigured(app,config) {
     return app.locals.infinitepayProductionProxy===JSON.stringify([config.publicOrigin,config.proxies]);

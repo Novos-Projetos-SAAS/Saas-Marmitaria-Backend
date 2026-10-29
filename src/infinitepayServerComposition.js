@@ -15,7 +15,7 @@ export async function initializeServerFinancial({app,db,io,loadOrder,env=process
     const destination=createOperationalSocketDestination({db,io,loadOrder,deploymentId:config.databaseId});
     const application=await initializeInfinitepayApplication({app,db,env,now,transport,
         productionAuthorization:authorizer.authorize,operationalAdapter:destination});
-    const diagnostics=createProductionDiagnostics({db,authorizer,application,now});
+    const diagnostics=createProductionDiagnostics({db,authorizer,application,now,environment:env});
     const control=createProductionControlRouter({authorizer});
     control.get('/session/logout-csrf',async(req,res)=>{
         try{return res.json({status:'success',data:await authorizer.logoutCsrf({session:{token:req.cookies?.token,origin:req.get('Origin')}})});}
