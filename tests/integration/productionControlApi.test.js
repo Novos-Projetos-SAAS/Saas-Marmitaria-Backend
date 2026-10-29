@@ -1,7 +1,6 @@
 import {test,describe,beforeEach,afterEach} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID} from 'node:crypto';
-import {readFile} from 'node:fs/promises';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 import jwt from 'jsonwebtoken';
@@ -47,10 +46,7 @@ describe('inactive production administrative API, synthetic only',{concurrency:f
     }
     const approval=()=>request('/approvals',{method:'POST',body:{capabilities:['WORKER','VERIFY_PAYMENT']}});
 
-    test('module has no mounting import in the real composition and cannot grant permissions',async()=>{
-        for(const name of ['app.js','server.js','infinitepayApplication.js','infinitepayProductionApplication.js']) {
-            assert.equal((await readFile(new URL('../../src/'+name,import.meta.url),'utf8')).includes('InfinitepayProductionControl'),false);
-        }
+    test('mounting the control API cannot grant permissions or authorize an unprivileged administrator',async()=>{
         await db('permissoes_usuarios').where({usuario_id:actor.id}).del();
         assert.equal((await approval()).status,403);
         assert.equal(Number((await db('permissoes_usuarios').count('* as n').first()).n),0);

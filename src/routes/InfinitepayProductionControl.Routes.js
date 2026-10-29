@@ -1,6 +1,6 @@
 import {Router,json} from 'express';
 
-// Deliberately not imported or mounted by app/server. Installation requires a separate, reviewed composition.
+// Mounted only by the explicit production composition; mounting grants no capability.
 export function createProductionControlRouter({authorizer}={}) {
     if(['approve','status','revoke','emergencyStop','csrf','endSession','recover'].some(method=>typeof authorizer?.[method]!=='function'))throw new TypeError('Controle administrativo indisponível.');
     const router=Router();

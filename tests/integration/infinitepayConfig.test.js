@@ -49,6 +49,7 @@ before(async () => {
         marmitas: [{ tamanho_id: size.id, quantidade: 1, alimentos: [food.id] }] };
     const { default: app } = await import('../../src/app.js');
     appDb = (await import('../../src/database/connection.js')).default;
+    await appDb.raw('SELECT 1');
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     base = 'http://127.0.0.1:' + server.address().port;
@@ -948,6 +949,38 @@ test('admin receipt requires permission, independent verification and exact tran
     await f.db('pagamentos').where({ id: payment.id }).update({ receipt_url: 'https://recibo.infinitepay.io/OTHER' });
     assert.equal((await request('/pagamentos/admin/' + order.id + '/comprovante')).status, 404);
 });
+
+test('T21 public phone tracking never exposes a paid order receipt, capabilities or provider identifiers', async () => {
+    const order = await pendingOnlineFixture({ released: true });
+    const payment = await verifiedPaymentFixture(order);
+    await f.db('pagamentos').where({ id: payment.id }).update({ receipt_url: 'https://recibo.infinitepay.io/' + payment.transaction_nsu });
+    const response = await fetch(base + '/pedidos/rastreio/' + order.telefone_cliente);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.data.some(row => row.id === order.id), true);
+    const serialized = JSON.stringify(body);
+    for (const forbidden of ['receipt_url', 'access_token', 'status_ref', 'return_nonce', 'token_hash', 'api_key',
+        'checkout_url', 'order_nsu', 'transaction_nsu', 'invoice_slug', payment.order_nsu, payment.transaction_nsu, payment.invoice_slug,
+        'https://recibo.infinitepay.io/']) assert.equal(serialized.includes(forbidden), false, forbidden);
+});
+
+test('private tracking by order enforces live session ownership before returning financial status', async () => {
+    await f.db('metodos_pagamento').where({ id: 33 }).update({ codigo: 'PIX', tipo_financeiro: 'PIX' });
+    await withOperationalFixture(async () => {
+        const owner = await browserSession(), stranger = await browserSession();
+        const created = await browserRequest(owner, '/pedido', { method: 'POST', body: { ...legacyPayload,
+            metodo_pagamento_id: 33, client_request_id: owner.client_request_id } });
+        assert.equal(created.status, 201); const order = (await created.json()).data;
+        const response = await browserRequest(owner, '/pedido/' + order.pedido_id);
+        assert.equal(response.status, 200); assert.equal(response.headers.get('cache-control'), 'no-store');
+        const data = (await response.json()).data;
+        assert.equal(data.pedido_id, order.pedido_id); assert.equal(data.pagamento_status, 'AGUARDANDO');
+        assert.equal(data.cozinha_liberada, false); assert.equal(data.receipt_url, undefined);
+        assert.equal((await browserRequest(stranger, '/pedido/' + order.pedido_id)).status, 404);
+        assert.equal((await fetch(base + '/pagamentos/sessao/pedido/' + order.pedido_id)).status, 404);
+        for (const id of ['0', '01', '2147483648', '11999999999']) assert.equal((await browserRequest(owner, '/pedido/' + id)).status, 404);
+    });
+});
 test('printing authorization rejects inactive users and stale admin roles', async () => {
     const order = await pendingOnlineFixture({ released: true }); await verifiedPaymentFixture(order);
     assert.equal((await request('/pedidos/' + order.id + '/operacao', { id: 4 })).status, 401);
@@ -1037,4 +1070,23 @@ test('normal administrative activation validates environment, credential, mappin
         assert.equal((await write({ativo:true})).status,400);
         assert.equal((await f.db('config_infinitepay').first()).ativo,false);
     } finally {await service.stop();app.locals.infinitepayRuntime=oldRuntime;delete app.locals.infinitepayActivation;}
+});
+
+test('normal application enforces the administrative control 8KiB parser before its shared JSON parser', async () => {
+    const response=await request('/pagamentos/controle-producao/approvals',{method:'POST',body:{synthetic:'x'.repeat(9000)}});
+    assert.equal(response.status,413);
+    assert.doesNotMatch(await response.text(),/x{100}|token|ciphertext/);
+});
+
+test('BFF buyers sharing one IP retain independent quotas only for live validated owner sessions', async () => {
+    const open=async()=> (await (await fetch(base+'/pagamentos/sessao',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).json()).data.session_token;
+    const a=await open(),b=await open();
+    const read=token=>fetch(base+'/pagamentos/sessao/pedido',{headers:{Authorization:'Bearer '+token}});
+    for(let n=0;n<60;n++)assert.equal((await read(a)).status,200,'owner quota request '+n);
+    assert.equal((await read(a)).status,429);
+    assert.equal((await read(b)).status,200,'another validated buyer is not denied by the shared BFF IP');
+    const invalidA=await read('Z'.repeat(43)),invalidB=await read('Y'.repeat(43));
+    assert.equal(invalidA.status,404);assert.equal(invalidB.status,404);
+    assert.equal(Number(invalidB.headers.get('ratelimit-remaining')),Number(invalidA.headers.get('ratelimit-remaining'))-1,'invalid bearer values share the IP quota');
+    assert.equal((await read(b)).status,200);
 });

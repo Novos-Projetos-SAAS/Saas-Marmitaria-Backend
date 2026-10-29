@@ -42,7 +42,7 @@ export function createProductionControlStore({db,deploymentId,now}) {
             .onConflict(['implantacao_id','token_hash']).ignore();
         await trx('infinitepay_autorizacoes_producao').where({...scope,sessao_hash:actor.sessionHash}).whereNull('revogado_em').update({revogado_em:instant,revogado_por:actor.id});
         const logged=await tryAudit(trx,'SESSION_END',row.geracao,actor,actor.sessionHash);
-        if(!logged)await trx('infinitepay_sessoes_revogadas').where({...scope,token_hash:actor.sessionHash}).update({auditoria_pendente:true});
+        await trx('infinitepay_sessoes_revogadas').where({...scope,token_hash:actor.sessionHash}).update({auditoria_pendente:!logged});
         return {auditPending:!logged};
     }
     return {lock,read,revoked,ensure,stop,recover,endSession,markPending};

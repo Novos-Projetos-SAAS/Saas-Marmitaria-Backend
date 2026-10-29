@@ -5,6 +5,7 @@ import { createInfinitepayRuntime,startInfinitepayProcessing } from './infinitep
 import { decryptApiKey } from './utils/infinitepayCredentials.js';
 import { assertProductionDatabase,productionBlocked,productionProxyConfigured } from './config/infinitepayProduction.js';
 import { timingSafeEqual } from 'node:crypto';
+import { createPaymentOutboxService } from './services/paymentOutboxService.js';
 
 export async function initializeProductionApplication({app,db,env,config,transport,now,productionAuthorization,operationalAdapter}) {
     if(!productionProxyConfigured(app,config)) throw productionBlocked();
@@ -35,13 +36,17 @@ export async function initializeProductionApplication({app,db,env,config,transpo
     async function canOperate(operation,details) {
         return processingAllowed() && await permitted('WORKER') && await permitted(operation,details) && processingAllowed();
     }
-    let consumer;
+    const recoveries=new Map();
+    let consumer,guardedAdapter;
     if(operationalAdapter) {
         const {createDurableOrderConsumer}=await import('./services/durableOrderConsumer.js');
-        const guardedAdapter={id:operationalAdapter.id,supportsIdempotency:operationalAdapter.supportsIdempotency};
+        guardedAdapter={id:operationalAdapter.id,supportsIdempotency:operationalAdapter.supportsIdempotency};
         for(const method of ['send','lookupReceipt','verifyReceipt']) {
             if(typeof operationalAdapter[method]!=='function') throw productionBlocked();
             guardedAdapter[method]=async(...args)=>{
+                // Recovery may only consult the existing receipt; a missing
+                // receipt must not activate the consumer's idempotent resend.
+                if(method==='send' && recoveries.has(String(args[0]?.id)))throw productionBlocked();
                 if(method!=='send' && !await canOperate('DELIVER_ORDER')) throw productionBlocked();
                 if(!processingAllowed() || operationalAdapter.id!==destinationId || env.INFINITEPAY_DELIVERY_ENABLED!=='true' || args.at(-1)?.signal?.aborted) throw productionBlocked();
                 return operationalAdapter[method](...args);
@@ -96,12 +101,50 @@ export async function initializeProductionApplication({app,db,env,config,transpo
     }};
     async function startWorker(options,epoch) {
         if(!await permitted('WORKER') || (!await permitted('VERIFY_PAYMENT') && !(consumer && await permitted('DELIVER_ORDER')))) throw productionBlocked();
-        await credentials();
+        try{await credentials();}
+        catch {
+            // Removing the current key stops new checkout, not verification of
+            // a preserved attempt with its own separately approved credential.
+            let historical=false;
+            const rows=await db('infinitepay_credenciais as c').where('c.config_id',1).whereExists(function(){
+                this.select(1).from('pagamentos as p').whereColumn('p.credencial_id','c.id')
+                    .whereColumn('p.handle_snapshot','c.handle').where('p.provedor','INFINITEPAY');
+            }).select('c.*');
+            for(const row of rows) {
+                try{if(await permitted('VERIFY_PAYMENT',{credentialId:row.id}) && /^[\x21-\x7E]{1,4096}$/.test(decryptApiKey(row,row.handle))){historical=true;break;}}
+                catch{/* An unavailable historical envelope cannot authorize work. */}
+            }
+            if(!historical)throw productionBlocked();
+        }
         if(epoch!==generation || env.INFINITEPAY_WORKER_ENABLED!=='true') throw productionBlocked();
         worker=startInfinitepayProcessing(runtime,{...options,onCycle:r=>{cycles++;errors+=r.errors || 0;}});
         running=true;
     }
-    const service={runtime,assertReady,
+    // Reuse only the original outbox acknowledgement, with no dispatch fallback.
+    const recoveryOutbox=createPaymentOutboxService({db,now,deliver:async()=>{throw productionBlocked();}});
+    async function recoverDelivery(outboxId) {
+        const id=String(outboxId);
+        if(!/^[1-9]\d{0,18}$/.test(id) || BigInt(id)>9223372036854775807n || !consumer || !await canOperate('DELIVER_ORDER'))throw productionBlocked();
+        if(recoveries.has(id))return recoveries.get(id);
+        const pending=Promise.resolve().then(async()=>{
+            const row=await db('outbox_eventos').where({id,tipo:'PEDIDO_LIBERADO'}).first();
+            const instant=now();
+            if(!row || !(instant instanceof Date) || !Number.isFinite(instant.getTime()) ||
+                (row.status==='PROCESSANDO' && (!row.locked_until || new Date(row.locked_until)>instant)))throw productionBlocked();
+            const ledger=await db('infinitepay_entregas_operacionais').where({chave_unica:row.chave_unica,outbox_id:row.id,
+                pedido_id:row.pedido_id,destino:destinationId}).first();
+            if(!ledger || !['INCERTA','ENVIANDO','RECEBIDA'].includes(ledger.status) ||
+                (ledger.status==='ENVIANDO' && (!ledger.locked_until || new Date(ledger.locked_until)>instant)))throw productionBlocked();
+            const dto=Object.freeze({id:row.id,pedidoId:row.pedido_id,tipo:row.tipo,key:row.chave_unica});
+            const receipt=await consumer.recover(dto.key);
+            if(await guardedAdapter.verifyReceipt(receipt,dto)!==true || !await canOperate('DELIVER_ORDER'))throw productionBlocked();
+            await recoveryOutbox.ackRecovered(dto,receipt);
+            return {outbox_id:row.id,pedido_id:row.pedido_id,status:'CONCLUIDO'};
+        }).finally(()=>recoveries.delete(id));
+        recoveries.set(id,pending);
+        return pending;
+    }
+    const service={runtime,assertReady,recoverDelivery,
         async start(options={}) {
             if(env.INFINITEPAY_WORKER_ENABLED!=='true' || worker) return;
             if(starting) return starting;

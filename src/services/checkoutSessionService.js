@@ -95,6 +95,14 @@ export function createCheckoutSessionService({ db, now = () => new Date(), runti
                 ...(link ? { checkout_url: link } : {}), ...(receipt ? { receipt_url: receipt } : {}) };
         });
     }
+    async function lookupOrder(token, pedidoId) {
+        const id = String(pedidoId);
+        if (!/^[1-9]\d{0,9}$/.test(id) || Number(id) > 2147483647) throw financialHttpError(404);
+        const session = await authorize(token);
+        const owned = await db('checkout_requisicoes').where({ sessao_hash: session.token_hash, pedido_id: Number(id) }).first('id');
+        if (!owned) throw financialHttpError(404);
+        return lookup(token, owned.id);
+    }
     async function lookupStatus(token, statusRef) {
         const session = await authorize(token);
         if (!runtime()) throw financialHttpError(503);
@@ -123,5 +131,5 @@ export function createCheckoutSessionService({ db, now = () => new Date(), runti
         });
         return open(token);
     }
-    return { open, authorize, lockCreation, attach, lookup, lookupStatus, resume, newRequest };
+    return { open, authorize, lockCreation, attach, lookup, lookupOrder, lookupStatus, resume, newRequest };
 }

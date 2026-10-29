@@ -17,6 +17,9 @@ export function createProductionDiagnostics({db,authorizer,application,now=()=>n
                     worker:{running:worker.running,cycles:worker.cycles,errors:worker.errors},
                     financial:{pending:await count('pagamentos',q=>q.whereIn('status',['CRIANDO','AGUARDANDO','INCERTA'])),
                         uncertain:await count('pagamentos',q=>q.where({status:'INCERTA'})),
+                        divergent:await count('pagamentos',q=>q.where({status:'DIVERGENTE'})),
+                        uncertainOverdue:await count('pagamentos',q=>q.where({status:'INCERTA'}).where('criado_em','<',new Date(instant.getTime()-overdueSeconds*1000))),
+                        oldestUncertainAt:(await trx('pagamentos').where({status:'INCERTA'}).min('criado_em as oldest').first()).oldest ?? null,
                         eventsPending:await count('pagamentos_eventos',q=>q.whereNot('status_processamento','CONCLUIDO'))},
                     outbox:{pending:await pending('outbox_eventos'),failed:await count('outbox_eventos',q=>q.where({status:'ERRO'})),overdue:await count('outbox_eventos',q=>q.whereNot('status','CONCLUIDO')
                         .where('criado_em','<',new Date(instant.getTime()-overdueSeconds*1000)))},

@@ -92,6 +92,6 @@ router.post('/login', limitadorLogin, login);
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.post('/logout', logout);
+router.post('/logout', (req,res,next) => (req.app.locals.infinitepayLogout || logout)(req,res,next));
 
 export default router;

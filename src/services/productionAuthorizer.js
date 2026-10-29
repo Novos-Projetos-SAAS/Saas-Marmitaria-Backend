@@ -46,7 +46,7 @@ export function createProductionAuthorizer({db,env,now=()=>new Date(),sessionSec
             .join('permissoes_usuarios as pu','pu.usuario_id','u.id').join('permissoes as p','p.id','pu.permissao_id')
             .where({'u.id':userId,'u.ativo':true,'n.ativo':true,'p.nome':'pagamentos.ativar_producao'}).whereNull('u.deletado_em').first('u.id'));
     }
-    async function administrator(session,{requireCsrf=true}={}) {
+    async function administrator(session,{requireCsrf=true,ending=false}={}) {
         try {
             record(session,['token','origin','csrf']);
             if(typeof session.token!=='string' || session.token.length>8192)refuse();
@@ -59,9 +59,15 @@ export function createProductionAuthorizer({db,env,now=()=>new Date(),sessionSec
                 !timingSafeEqual(Buffer.from(session.csrf),Buffer.from(expected))))refuse();
             const claims=jwt.verify(session.token,key,{algorithms:['HS256'],clockTimestamp:Math.floor(time().getTime()/1000)});
             if(!Number.isSafeInteger(claims.id) || claims.id<1 || !Number.isFinite(claims.exp) || !Number.isFinite(claims.iat) ||
-                claims.iat>Math.floor(time().getTime()/1000) || !await hasPermission(db,claims.id))refuse();
+                claims.iat>Math.floor(time().getTime()/1000))refuse();
             const sessionHash=createHash('sha256').update('infinitepay-admin-session-v1\0'+session.token).digest('hex');
-            if(endedSessions.has(sessionHash) || await control.revoked(sessionHash))refuse();
+            if(ending) {
+                // Losing permission may deny new grants, never prevent the owner
+                // from durably ending a session that previously held a grant.
+                if(!await hasPermission(db,claims.id) &&
+                    !await db('infinitepay_autorizacoes_producao').where({implantacao_id:config.databaseId,sessao_hash:sessionHash,aprovado_por:claims.id}).first('id') &&
+                    (await control.revoked(sessionHash))?.usuario_id!==claims.id)refuse();
+            }else if(!await hasPermission(db,claims.id) || endedSessions.has(sessionHash) || await control.revoked(sessionHash))refuse();
             return {id:claims.id,expiresAt:new Date(claims.exp*1000),sessionHash};
         } catch {refuse('ADMINISTRATION_DENIED');}
     }
@@ -73,17 +79,17 @@ export function createProductionAuthorizer({db,env,now=()=>new Date(),sessionSec
         return {row,fingerprint};
     }
     async function activeActor(trx,actor,{ending=false}={}) {
-        if(actor.expiresAt<=time() || (!ending && endedSessions.has(actor.sessionHash)) ||
-            await control.revoked(actor.sessionHash,trx) || !await hasPermission(trx,actor.id))refuse('ADMINISTRATION_DENIED');
+        if(actor.expiresAt<=time() || (!ending && (endedSessions.has(actor.sessionHash) ||
+            await control.revoked(actor.sessionHash,trx) || !await hasPermission(trx,actor.id))))refuse('ADMINISTRATION_DENIED');
     }
     function signature(row) {
         return createHmac('sha256',bootKey).update(JSON.stringify([row.id,row.boot_id,row.implantacao_id,row.banco,row.ambiente,row.origem_https,
             String(row.credencial_id),row.credencial_hash,row.chave_sessao_hash,[...row.capacidades].sort(),row.destino ?? null,row.aprovado_por,
             new Date(row.criado_em).toISOString(),new Date(row.expira_em).toISOString(),row.sessao_hash,String(row.controle_geracao)])).digest('hex');
     }
-    async function administrative(operation,request,action) {
+    async function administrative(operation,request,action,{ending=false}={}) {
         let actor,canAudit=false;
-        try {await refresh();canAudit=true;actor=await administrator(request?.session);return await action(actor);}
+        try {await refresh();canAudit=true;actor=await administrator(request?.session,{ending});return await action(actor);}
         catch(error) {
             if(canAudit && operation) {try{await audit(db,operation,'DENY',error instanceof AuthorizationError?error.code:'ADMINISTRATION_FAILED',{userId:actor?.id});}catch{}}
             throw new AuthorizationError(error instanceof AuthorizationError?error.code:'ADMINISTRATION_FAILED');
@@ -213,7 +219,12 @@ export function createProductionAuthorizer({db,env,now=()=>new Date(),sessionSec
             record(request,['session']);endedSessions.add(actor.sessionHash);
             const result=await db.transaction(async trx=>{await control.lock(trx);await activeActor(trx,actor,{ending:true});return control.endSession(trx,actor);});
             if(result.auditPending)refuse('SESSION_ENDED_AUDIT_PENDING');return {ended:true};
-        });
+        },{ending:true});
+    }
+    async function logoutCsrf(request) {
+        try{record(request,['session']);await refresh();await administrator(request.session,{requireCsrf:false,ending:true});
+            return {csrfToken:infinitepaySessionCsrf(request.session.token,secret())};}
+        catch{refuse('ADMINISTRATION_DENIED');}
     }
     async function recover(request) {
         return administrative(null,request,async actor=>{
@@ -229,5 +240,5 @@ export function createProductionAuthorizer({db,env,now=()=>new Date(),sessionSec
             });
         });
     }
-    return {approve,authorize,revoke,emergencyStop,status,csrf,endSession,recover};
+    return {approve,authorize,revoke,emergencyStop,status,csrf,logoutCsrf,endSession,recover};
 }

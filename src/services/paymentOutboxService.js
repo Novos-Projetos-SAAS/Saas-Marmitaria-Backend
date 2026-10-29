@@ -79,7 +79,29 @@ export function createPaymentOutboxService({ db, deliver, now = () => new Date()
         }
     }
 
-    return { processNext: () => processNext(), processEvent: eventId => {
+    async function ackRecovered(input, receipt) {
+        const refuse=code=>{throw Object.assign(new Error('Não foi possível reconhecer a entrega recuperada.'),{code,statusCode:409});};
+        if(!input || !/^[1-9]\d*$/.test(String(input.id)) || !/^[1-9]\d*$/.test(String(input.pedidoId)) ||
+            input.tipo!=='PEDIDO_LIBERADO' || typeof input.key!=='string' || !input.key || receipt?.acknowledged!==true ||
+            receipt.key!==input.key || String(receipt.pedidoId)!==String(input.pedidoId) ||
+            typeof receipt.destination!=='string' || typeof receipt.receiptId!=='string' || !receipt.receiptId.trim())refuse('OUTBOX_RECOVERY_INVALID');
+        return db.transaction(async trx=>{
+            // Lock only outbox/delivery rows, never acquire a later order/payment lock.
+            const row=await trx('outbox_eventos').where({id:input.id,pedido_id:input.pedidoId,tipo:input.tipo,chave_unica:input.key}).forUpdate().first();
+            if(!row)refuse('OUTBOX_RECOVERY_INVALID');
+            const instant=now();if(!(instant instanceof Date) || !Number.isFinite(instant.getTime()))refuse('OUTBOX_RECOVERY_INVALID');
+            if(row.status==='PROCESSANDO' && (!row.locked_until || new Date(row.locked_until)>instant))refuse('OUTBOX_RECOVERY_BUSY');
+            const ledger=await trx('infinitepay_entregas_operacionais').where({chave_unica:input.key}).forUpdate().first();
+            if(!ledger || ledger.status!=='RECEBIDA' || String(ledger.outbox_id)!==String(row.id) ||
+                String(ledger.pedido_id)!==String(row.pedido_id) || ledger.destino!==receipt.destination ||
+                ledger.receipt_id!==receipt.receiptId || !ledger.recebido_em)refuse('OUTBOX_RECOVERY_INVALID');
+            if(row.status!=='CONCLUIDO')await trx('outbox_eventos').where({id:row.id}).update({status:'CONCLUIDO',processado_em:instant,
+                locked_by:null,locked_until:null,proxima_tentativa_em:null});
+            return {id:row.id,pedidoId:row.pedido_id,tipo:row.tipo,key:row.chave_unica};
+        });
+    }
+
+    return { ackRecovered, processNext: () => processNext(), processEvent: eventId => {
         if (!/^[1-9]\d*$/.test(String(eventId))) throw new TypeError('Evento de saída inválido.');
         return processNext(eventId);
     } };

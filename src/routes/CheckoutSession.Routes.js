@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import connection from '../database/connection.js';
 import { createCheckoutSessionService } from '../services/checkoutSessionService.js';
 import { criarPedido } from '../controllers/Pedidos.Controller.js';
@@ -9,9 +9,19 @@ const router = Router();
 router.use((req, res, next) => {
     res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff' }); next();
 });
-router.use(rateLimit({ windowMs: 60000, limit: 60, standardHeaders: true, legacyHeaders: false }));
 const token = req => /^Bearer ([A-Za-z0-9_-]{43})$/.exec(req.get('Authorization') || '')?.[1];
 const service = req => req.app.locals.checkoutSessions ?? createCheckoutSessionService({ db: connection, runtime: () => req.app.locals.infinitepayRuntime });
+router.use(rateLimit({ windowMs: 60000, limit: 60, standardHeaders: true, legacyHeaders: false,
+    async keyGenerator(req) {
+        try {
+            // All buyers reach this API through the BFF. Only a live database-
+            // validated session may have its own quota; invented tokens share IP.
+            const owner=await service(req).authorize(token(req));
+            if(!/^[a-f0-9]{64}$/.test(owner?.token_hash || ''))throw financialHttpError(503);
+            return 'owner:'+owner.token_hash;
+        }catch(error){if(error.statusCode!==404)throw error;return 'ip:'+ipKeyGenerator(req.ip);}
+    }
+}));
 function jsonOnly(req, res, next) {
     if (!req.is('application/json')) return next(financialHttpError(415)); next();
 }
@@ -22,6 +32,7 @@ router.post('/', jsonOnly, async (req, res) => {
     res.json({ status: 'success', data: await service(req).open(token(req)) });
 });
 router.get('/pedido', async (req, res) => res.json({ status: 'success', data: await service(req).lookup(token(req), req.query.requisicao) }));
+router.get('/pedido/:id', async (req, res) => res.json({ status: 'success', data: await service(req).lookupOrder(token(req), req.params.id) }));
 router.get('/retorno', async (req, res) => res.json({ status: 'success', data: await service(req).lookupStatus(token(req), req.query.ref) }));
 router.post('/pedido', jsonOnly, ownedWrite, (req, res, next) => {
     res.locals.origemPedido = 'PUBLICO';

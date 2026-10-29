@@ -1,4 +1,5 @@
-import { initializeInfinitepayApplication, validateInfinitepayEnvironment } from './infinitepayApplication.js';
+import { validateInfinitepayEnvironment } from './infinitepayApplication.js';
+import { initializeServerFinancial } from './infinitepayServerComposition.js';
 
 import chalk from 'chalk';
 import logSymbols from 'log-symbols';
@@ -12,6 +13,7 @@ dotenv.config();
 const financialEnvironment = validateInfinitepayEnvironment(process.env);
 const { default: app } = await import('./app.js');
 const { default: connection } = await import('./database/connection.js');
+const { buscarPedidoCompletoPorId } = await import('./utils/pedidosUtils.js');
 
 const PORT = process.env.PORT || 3333;
 
@@ -133,7 +135,7 @@ async function closeServer() {
     return shutdown;
 }
 try {
-    financial = await initializeInfinitepayApplication({ app, db: connection });
+    financial = await initializeServerFinancial({ app, db: connection, io, loadOrder: buscarPedidoCompletoPorId });
     await new Promise((resolve, reject) => {
         httpServer.once('error', reject);
         httpServer.listen(PORT, financialEnvironment ? '127.0.0.1' : undefined, resolve);

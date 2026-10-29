@@ -2,15 +2,32 @@ import { Router } from 'express';
 import connection from '../database/connection.js';
 import { verifyToken } from '../middlewares/verifyToken.js';
 import { checkPermission } from '../middlewares/checkPermission.js';
-import { requireActiveFinancialUser } from '../middlewares/infinitepayAdminSecurity.js';
+import { requireActiveFinancialUser, protectInfinitepayWrite, csrfToken } from '../middlewares/infinitepayAdminSecurity.js';
 import { aplicarElegibilidadeOperacional } from '../utils/pedidoPaymentPolicy.js';
 import { validatedReceipt, availableReceiptOrders } from '../services/checkoutSessionService.js';
 import { financialHttpError } from '../infinitepayRuntime.js';
+import { createAdministrativePaymentReconciliation } from '../services/administrativePaymentReconciliation.js';
 
 const router = Router();
 router.use((req, res, next) => { res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' }); next(); });
-router.use(verifyToken, requireActiveFinancialUser, checkPermission('pagamentos.visualizar'));
-router.get('/', async (req, res) => {
+router.use(verifyToken, requireActiveFinancialUser);
+router.get('/csrf',checkPermission('pagamentos.visualizar'),(req,res)=>{
+    if(!req.secure)throw financialHttpError(403);
+    res.json({status:'success',csrf_token:csrfToken(req)});
+});
+router.post('/:id/conciliar',(req,res,next)=>{
+    if(!req.secure)throw financialHttpError(403);
+    let origin;
+    try{origin=new URL(req.get('Origin'));}catch{throw financialHttpError(403);}
+    if(origin.protocol!=='https:' || origin.origin!==req.get('Origin'))throw financialHttpError(403);
+    next();
+},protectInfinitepayWrite,async(req,res)=>{
+    if(!/^[1-9]\d{0,9}$/.test(req.params.id))throw financialHttpError(404);
+    const service=createAdministrativePaymentReconciliation({db:connection});
+    const data=await service.request({pedidoId:Number(req.params.id),actorId:req.usuario.id,input:req.body});
+    res.json({status:'success',data});
+});
+router.get('/',checkPermission('pagamentos.visualizar'), async (req, res) => {
     const rows = await connection('pedidos').where({ fluxo_pagamento: 'INFINITEPAY' }).whereNull('deletado_em')
         .select('pedidos.id as pedido_id', 'nome_cliente', 'valor_total', 'status as pedido_status', 'criado_em')
         .select(connection.raw(`(SELECT status FROM pagamentos WHERE pedido_id=pedidos.id ORDER BY tentativa_numero DESC LIMIT 1) AS pagamento_status`))
@@ -20,7 +37,7 @@ router.get('/', async (req, res) => {
     res.json({ status: 'success', data: rows.map(row => ({ ...row, cozinha_autorizada: eligible.has(row.pedido_id),
         comprovante_disponivel: receipts.has(row.pedido_id) })) });
 });
-router.get('/:id/comprovante', async (req, res) => {
+router.get('/:id/comprovante',checkPermission('pagamentos.visualizar'), async (req, res) => {
     if (!/^[1-9]\d{0,9}$/.test(req.params.id) || Number(req.params.id) > 2147483647) throw financialHttpError(404);
     const eligible = await aplicarElegibilidadeOperacional(connection('pedidos')).where('pedidos.id', Number(req.params.id)).whereNull('pedidos.deletado_em').first('pedidos.id');
     const payment = eligible && await connection('pagamentos').where({ pedido_id: eligible.id }).orderBy('tentativa_numero', 'desc').first();

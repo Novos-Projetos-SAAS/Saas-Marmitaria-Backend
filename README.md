@@ -1,5 +1,9 @@
 # Saas-Marmitaria
 
+## Estado vigente da candidata à implantação
+
+O [fechamento funcional e checklist da Fase 6](docs/infinitepay/PRONTIDAO_FASE_6.md) registra a matriz T01–T28, configuração, sequência de instalação e bloqueios atuais. As seções 5D abaixo conservam o contexto dos ensaios anteriores. A composição normal agora liga controle/diagnóstico/autorizador e a lista operacional persistida ao Socket.IO existente, somente no perfil financeiro production. Isso não concede permissões nem ativa checkout, worker ou impressão. O parecer comercial continua NO-GO até resolver os bloqueios externos, de segurança e implantação.
+
 ## Relatórios e dashboard financeiro
 
 Os relatórios gerenciais e as vendas do dashboard usam a **criação do pedido em America/Sao_Paulo**. A quantidade de pedidos é operacional (inclui pendentes/cancelados); faturamento e ticket médio usam vendas consideradas. POSTERIOR preserva o cálculo legado, sem afirmar recebimento pela InfinitePay. Um pagamento online só entra com prova independente válida, valor original correspondente ao pedido, identificadores preenchidos e método confirmado. CRIANDO, AGUARDANDO, INCERTA e pagamentos sem prova não entram nas vendas.
@@ -110,9 +114,9 @@ Permanecem pendentes a autenticidade contratual do webhook, recuperação extern
 
 ### Contratos de autorização e destino (Fase 5D.2, não ativados)
 
-`createProductionAuthorizer({db,env,now,sessionSecret})` prepara `approve`, `authorize`, `revoke` e `emergencyStop`. Não é instanciado pelo servidor padrão e não cria rotas ou aprovações automaticamente. A migration `20261027000300_autorizacoes_producao.js` acrescenta aprovações e decisões auditáveis e a permissão `pagamentos.ativar_producao`, sem atribuí-la a usuários. Sua aplicação continua restrita a bancos descartáveis nesta fase.
+`createProductionAuthorizer({db,env,now,sessionSecret})` fornece `approve`, `authorize`, `revoke` e `emergencyStop`. O fechamento funcional o instancia por processo no perfil financeiro production, sem criar aprovações automaticamente. A migration `20261027000300_autorizacoes_producao.js` acrescenta aprovações e decisões auditáveis e a permissão `pagamentos.ativar_producao`, sem atribuí-la a usuários. Nenhuma migration real foi aplicada neste fechamento.
 
-A futura instalação deverá manter uma instância do autorizador por processo e iniciar o servidor com flags financeiras desabilitadas. O controle administrativo deverá obter aprovação antes de habilitar flags e solicitar start do worker; a recusa de start não deve ser contornada para conseguir boot. Reboot não reutiliza a aprovação anterior. A sequência de controle administrativo ainda não está instalada.
+A instalação deve iniciar com flags financeiras desabilitadas. O controle montado exige aprovação antes de solicitar start do worker; o boot mantém a API disponível aguardando grants, sem contornar a autorização. Reboot não reutiliza aprovação anterior. Caminhos e sequência executável estão no checklist vigente.
 
 O futuro controle administrativo deverá passar ao serviço metadados extraídos pelo servidor: `session:{token,origin,csrf}`. `approve({session,capabilities,validForSeconds,credentialId?,destinationId?})` valida JWT HS256 assinado pela aplicação, usuário e nível ativos, permissão explícita (sem bypass pelo nome admin), Origin HTTPS exata e CSRF da sessão existente. A validade fica limitada a quinze minutos e à expiração do JWT, com padrão de cinco minutos; a política de duração para operação contínua deverá ser validada antes da implantação. Nenhum acesso de acompanhamento do comprador substitui essa sessão. O serviço recusa relógio regressivo, credencial ausente/indecifrável, mudança da implantação ou falha de auditoria. Chaves de sessão fortes precisam ser fornecidas por cofre; nenhuma chave real foi configurada nesta fase.
 
@@ -134,7 +138,7 @@ Continuam pendentes a instalação autorizada do controle administrativo, destin
 
 ### Controle administrativo preparado (Fase 5D.3, inativo)
 
-`createProductionControlRouter({authorizer})`, em `src/routes/InfinitepayProductionControl.Routes.js`, é uma fábrica sem efeito de instalação. Nenhum import/mount foi acrescentado à composição, nenhuma variável a instala e nenhuma permissão é atribuída automaticamente. Não há interface de ativação no Frontend. Os caminhos abaixo são **relativos ao módulo não montado**, não URLs disponíveis no servidor:
+`createProductionControlRouter({authorizer})`, em `src/routes/InfinitepayProductionControl.Routes.js`, é uma fábrica sem efeitos ao importar. A composição financeira production agora a monta em `/pagamentos/controle-producao`, sem atribuir permissões ou aprovações. Não há interface visual de ativação no Frontend; o procedimento é administrativo supervisionado. Os caminhos abaixo são relativos a esse prefixo:
 
 | Método / caminho relativo | Contrato JSON | Efeito permitido |
 |---|---|---|
@@ -186,9 +190,9 @@ Socket.IO atual não retorna recibo durável ao Backend, e a deduplicação do N
 
 ### Reforço de controle e continuidade (Fase 5D.4, sem instalação)
 
-O módulo administrativo continua sem import/mount em app/server. Nenhuma variável, migration ou bootstrap concede acesso ao servidor operacional. A migration aditiva e forward-only `20261028000100_controles_administrativos.js` prepara tabelas vazias `infinitepay_controle_producao`, `infinitepay_paradas_producao`, `infinitepay_sessoes_revogadas` e `infinitepay_controle_acoes`, além de vínculos nullable de sessão/geração em aprovações históricas e metadados de revogação. Não cria estado ativo, permissões, pedidos ou aprovações, e foi aplicada somente em schemas descartáveis. H1/H4/DEMO e produção não foram migrados.
+O módulo administrativo é montado exclusivamente pela composição financeira production, mantendo a permissão explícita e os demais gates. A migration aditiva e forward-only `20261028000100_controles_administrativos.js` prepara tabelas vazias `infinitepay_controle_producao`, `infinitepay_paradas_producao`, `infinitepay_sessoes_revogadas` e `infinitepay_controle_acoes`, além de vínculos nullable de sessão/geração em aprovações históricas e metadados de revogação. Não cria estado ativo, permissões, pedidos ou aprovações, e foi aplicada somente em schemas descartáveis. H1/H4/DEMO e produção não foram migrados.
 
-Novos caminhos relativos **não montados**:
+Demais caminhos relativos ao controle:
 
 | Método / caminho | Entrada e segurança | Resultado |
 |---|---|---|
@@ -256,13 +260,13 @@ O teste quiesce aplicações, persiste parada e encerramento de sessão, executa
 
 Isso comprova o cenário local sintético, não RPO/RTO, failover, backup externo, restore de produção ou custódia comercial de chaves. A chave de criptografia e a chave de recibos sintéticos são mantidas pelo fixture; o dump não substitui a custódia separada desses segredos. Não operar simultaneamente origem e clone restaurado como instalações comerciais ativas.
 
-#### Logout e observabilidade preparados, não montados
+#### Logout e observabilidade
 
-A resposta legado foi extraída para `src/utils/logoutResponse.js` sem alterar endpoint, JSON ou opções do cookie; testes cobrem development/production e o navegador existente. `createProductionLogoutBridge({authorizer,logout})` é montado apenas no ensaio: exige HTTPS, cookie JWT, Origin/CSRF e permissão pelo autorizador, aguarda `{ended:true}` durável e somente então delega a limpeza do cookie. Resultado incompleto, erro de persistência ou auditoria pendente não viram sucesso. Não há fallback para logout simples no caminho sensível.
+A resposta legado permanece em `src/utils/logoutResponse.js`. O dispatcher production usa `createProductionLogoutBridge({authorizer,logout})` nas sessões com histórico de grant: exige HTTPS, JWT válido e Origin/CSRF, aguarda encerramento durável e somente então limpa o cookie. Perder a permissão não impede encerrar a própria sessão. Falha conserva o cookie; retry explícito pode reparar auditoria pendente sem reativar capacidades. JWT expirado/inválido, já incapaz de autorizar, pode ter seu cookie removido.
 
-O Frontend atual envia POST /auth/logout sem o novo CSRF. Aplicar a ponte indistintamente quebraria esse contrato para usuários normais; por isso o caminho principal conserva seu funcionamento e a ponte continua fora dele. Antes de instalar: aprovar dispatcher de sessão no servidor, bootstrap/envio de CSRF para sessões sensíveis, tratamento de token inválido/expirado/revogado, falha de persistência, cookies/domínios e sessões normais. A ligação não pode depender apenas do cliente nem deixar outro endpoint simples encerrar aparentemente uma sessão sensível sem revogá-la.
+O Frontend envia POST /auth/logout. Se o servidor exigir encerramento sensível, obtém HMAC em GET `/pagamentos/controle-producao/session/logout-csrf` e repete somente o logout com `X-Infinitepay-CSRF`. Essa leitura restrita exige o próprio JWT e histórico de grant; não concede permissões e não substitui GET `/csrf` administrativo. Usuários sem histórico financeiro conservam o logout simples. A UI só limpa seu estado após sucesso do servidor; falha de persistência não aparece como encerramento concluído.
 
-`createProductionDiagnostics` também não é montado em app/server. O ensaio expõe /diagnostics somente no HTTPS loopback, com sessão, Origin e CSRF. Retorna contagens/idades agregadas de pendências financeiras e INCERTA, eventos pendentes, erros locais do worker, outbox pendente/falha/atrasada, entregas ambíguas, aprovações/revogações/paradas e pendências de auditoria. Erros de credencial são decisões locais; não certificam titularidade/validade da API Key no provedor. Não retorna tokens, chaves, UUID da implantação, pedidos, identificadores financeiros, URLs ou exceções livres.
+`createProductionDiagnostics` é montado em `/pagamentos/controle-producao/diagnostico`, com HTTPS, sessão, Origin e CSRF. Retorna contagens/idades agregadas de pendências financeiras e INCERTA, DIVERGENTE, eventos pendentes, erros locais do worker, outbox pendente/falha/atrasada, entregas ambíguas, aprovações/revogações/paradas e pendências de auditoria. Erros de credencial são decisões locais; não certificam titularidade/validade da API Key no provedor. Não retorna tokens, chaves, UUID da implantação, pedidos, identificadores financeiros, URLs ou exceções livres.
 
 Contagens usam snapshot repeatable-read, cercado por duas observações administrativas normalizadas. Mudança da geração/parada/aprovações durante a observação rejeita o diagnóstico; armazenamento indisponível ou métricas incompletas retornam erro, sem substituir falhas por zero. CommercialReady permanece false: esse diagnóstico não é autorização de ativação nem certificação de disponibilidade externa. Alertas, limiares, supervisor entre hosts e canal de parada fora de banda continuam pendentes de decisão/ensaio operacional.
 
@@ -286,11 +290,11 @@ As [instruções oficiais atuais](https://ajuda.infinitepay.io/pt-BR/articles/10
 |---|---|---|
 | Controle, finanças e entrega sintéticos | GO restrito ao ensaio reproduzível | NO-GO: contratos e infraestrutura reais não certificados. |
 | QZ/PEM e identidade da estação | Plano executivo separado; sem executar mudanças | CRÍTICO de prontidão: identidade/custódia, exposição e autorização do assinador sem comprovação suficiente; risco técnico alto, sem afirmar comprometimento. |
-| Destino real / recibo / reimpressão | Somente adaptadores/efeitos sintéticos | CRÍTICO: não há recepção operacional real autenticada e homologada. |
-| Logout sensível e continuidade | Ponte e modelo preparados, fora da composição operacional | ALTO: dispatcher/CSRF, política comercial e supervisão entre hosts precisam de aprovação e ensaio. |
+| Destino operacional / recibo / reimpressão | Lista PostgreSQL + Socket existentes ligados ao consumidor durável; recibo significa disponibilidade persistida | Impressão física não certificada; ensaio final de infraestrutura depende de autorização. |
+| Logout sensível e continuidade | Dispatcher/CSRF montados e testados, com revogação durável | ALTO: política comercial e supervisão entre hosts precisam de aprovação e ensaio. |
 | Contratos InfinitePay / reconciliação | Proteção local e mocks | ALTO: autenticidade, idempotência/recuperação externas e ciclo estorno/repasse pendentes. |
 | Backup / alertas / infraestrutura | Restore e reinício locais comprovados | ALTO: custódia, RPO/RTO, backup externo e recuperação real não ensaiados. |
-| Lint Frontend | Problemas preexistentes registrados, sem alteração | MÉDIO: 15 erros de set-state-in-effect e 1 aviso de exhaustive-deps; correção fora desta fase. |
+| Lint Frontend | 15 erros e 1 aviso corrigidos sem supressões ou CSS | Verificação final registrada no checklist vigente. |
 
 O resultado global é NO-GO para produção enquanto houver bloqueador crítico ou garantia essencial sem comprovação. Nenhum teste local autoriza montar controles no servidor existente, aplicar migrations em bancos homologados, habilitar checkout/worker comercial, conectar cozinha, imprimir, fazer push/merge ou deploy.
 

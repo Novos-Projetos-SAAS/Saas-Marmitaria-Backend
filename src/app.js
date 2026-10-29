@@ -77,6 +77,8 @@ app.use(cors({
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
 }));
 
+// The shared parser must not consume a control request before its tighter bound.
+app.use('/pagamentos/controle-producao',express.json({limit:'8kb',strict:true}));
 app.use(express.json());
 app.use(cookieParser());
 
