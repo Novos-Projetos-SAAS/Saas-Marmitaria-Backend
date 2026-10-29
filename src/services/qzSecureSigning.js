@@ -8,7 +8,7 @@ const unavailable=()=>Object.assign(new Error('Assinatura QZ segura indisponíve
 // An environment flag cannot install this runtime. The reused engine requires a
 // loopback disposable database/schema before SQL; no operational key is loaded.
 export async function createQzSecureSigning({db,origins,sessionSecret,signDigest,certificate,deriveDocument,now=()=>new Date(),env=process.env}={}) {
-    if(env.QZ_SIGNING_MODE!=='secure-test' || typeof signDigest!=='function' || typeof certificate!=='string' || !certificate.trim())throw unavailable();
+    if(env.NODE_ENV!=='test' || env.QZ_SIGNING_MODE!=='secure-test' || typeof signDigest!=='function' || typeof certificate!=='string' || !certificate.trim())throw unavailable();
     let publicIdentity;
     try{publicIdentity=new X509Certificate(certificate);}catch{throw unavailable();}
     const service=await createQzSigningPrototype({db,origins,sessionSecret,signDigest,deriveDocument,now,

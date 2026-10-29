@@ -35,14 +35,20 @@ describe('protected QZ branch contract',{concurrency:false},()=>{
         assert.equal((await f.secureRequest('/sign',{request:'a'.repeat(64)})).status,404);
         assert.equal((await f.secureRequest('/csrf',undefined,{method:'GET'})).status,404);assert.equal(f.legacyCalls,0);
     });
-    test('only explicit legacy/default mode reaches the legacy reference, with no automatic mode fallback',async()=>{
+    test('legacy and default modes never reach a legacy signer even inside the isolated fixture',async()=>{
         await integrated();const reference=await f.createProtectedServer({runtime:null});
         try {
-            f.qzMode=undefined;assert.equal((await reference('/assinar',{request:'x'})).text,'LEGACY_REFERENCE');
-            f.qzMode='legacy';assert.equal((await reference('/assinar',{request:'x'})).status,200);
+            f.qzMode=undefined;assert.equal((await reference('/assinar',{request:'x'})).status,503);
+            f.qzMode='legacy';assert.equal((await reference('/assinar',{request:'x'})).status,503);
             f.qzMode='secure-test';assert.notEqual((await reference('/assinar',{request:'x'})).text,'LEGACY_REFERENCE');
-            f.qzMode='unknown';assert.equal((await reference('/assinar',{request:'x'})).status,503);assert.equal(f.legacyCalls,2);
+            f.qzMode='unknown';assert.equal((await reference('/assinar',{request:'x'})).status,503);assert.equal(f.legacyCalls,0);
         }finally{await reference.close();}
+    });
+    test('production refuses a genuine protected test runtime and cannot construct one with a production profile',async()=>{
+        await integrated();const request=await f.createProtectedServer({environment:'production'});
+        try{assert.equal((await request('/assinar',{request:'x'})).status,503);assert.equal(f.signCalls,0);assert.equal(f.legacyCalls,0);}
+        finally{await request.close();}
+        await assert.rejects(f.anotherSecureRuntime({env:{NODE_ENV:'production',QZ_SIGNING_MODE:'secure-test'}}));
     });
     test('installed protected runtime cannot expose legacy when its mode flag was omitted',async()=>{
         await integrated();f.qzMode=undefined;assert.equal((await f.secureRequest('/assinar',{request:'x'})).status,503);assert.equal(f.legacyCalls,0);

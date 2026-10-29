@@ -1,14 +1,14 @@
 # Candidata à implantação — InfinitePay
 
-Atualização da sprint final: fluxo manual de estorno auditado, saúde/readiness, alertas de filas e ingresso Socket.IO protegidos. Os comandos e limites atuais estão na seção “Sprint final” ao final; os testes e commits desta atualização são registrados ali. Não houve alteração visual ou operacional QZ.
+Fechamento definitivo autorizado: o assinador legado deixou de ser importado/montado pelas rotas da candidata e a impressão de pedidos está desativada nos perfis públicos, sem fallback de assinatura ou window.print. O caminho seguro existe exclusivamente para testes sintéticos. Nenhum PEM, certificado, QZ Tray instalado ou ambiente operacional foi alterado. Os resultados atuais e o impacto de deploy constam na última seção.
 
-**Decisão posterior do proprietário — escopo da primeira versão:** T24 está **ADIADO POR DECISÃO DO PROPRIETÁRIO**, sem aprovação artificial. A automatização/homologação financeira de estorno deixa de ser critério de conclusão desta versão. Permanecem o fluxo administrativo manual já implementado, o dever operacional de tratar reembolsos aplicáveis e a separação entre cancelamento do pedido, execução externa informada e estorno financeiramente comprovado. Nenhuma operação financeira de estorno não homologada foi habilitada. T23 físico continua pendente; não impede o ensaio de infraestrutura isolado. O NO-GO de exposição pública do assinador legado é um bloqueio de segurança distinto da disponibilidade da impressora.
+**Decisão posterior do proprietário — escopo da primeira versão:** T24 está **ADIADO POR DECISÃO DO PROPRIETÁRIO**, sem aprovação artificial. A automatização/homologação financeira de estorno deixa de ser critério de conclusão desta versão. Permanecem o fluxo administrativo manual já implementado, o dever operacional de tratar reembolsos aplicáveis e a separação entre cancelamento do pedido, execução externa informada e estorno financeiramente comprovado. Nenhuma operação financeira de estorno não homologada foi habilitada. T23 físico continua pendente. A exposição do assinador legado foi corrigida nesta candidata; isso não homologa impressão nem autoriza deploy.
 
 Referência: `CODEX_PACOTE_COMPLETO.md`, 1.430 linhas, SHA-256 `AE2B1EEA9D5424A08A9B2D36090C14FDF2A75BB1407DC1C43C0E4D6691FC9D08`. Fechamento funcional de 29/10/2026, exclusivamente nas branches `feature/infinitepay-checkout`.
 
 ## Resultado e limites
 
-**NO-GO comercial.** A candidata preserva os bloqueios de ativação. Não foram executados deploy, migrations reais, concessões de permissão, pagamentos, `/links`, `/payment_check`, impressão ou alterações em H1/H2/H3/H4/DEMO.
+**NO-GO comercial. Candidata preparada para implantação com pagamentos e impressão de pedidos desligados, sujeita à aprovação do impacto e do ambiente definitivo.** Não foram executados deploy, migrations reais, concessões reais de permissão, pagamentos, `/links`, `/payment_check`, impressão ou alterações em H1/H2/H3/H4/DEMO.
 
 A contagem usa as **18 RB** do PRD §4, sem somar repetições do TRD/UI/guia: **17 implementadas e verificáveis no ambiente sintético; RB-14 parcialmente implementada**. Das **6 HU**, 01–05 têm implementação funcional; o subcaso de estorno de HU-06 fica parcial. A confirmação financeira de estorno está adiada por decisão expressa do proprietário e não bloqueia por si a primeira versão; não é requisito aprovado ou silenciosamente removido da especificação original. Isso não representa aceite de segurança ou homologação de infraestrutura comercial.
 
@@ -80,9 +80,9 @@ APROVADO significa integração **sintética** nesta candidata. Pix e Crédito r
 
 | Verificação na candidata | Comando | Resultado final |
 |---|---|---|
-| Backend, PostgreSQL descartável | `npm test` | **1.116/1.116**, 30 suítes, 0 falhas/skips; 571,5 s. |
-| Frontend, unidades/contratos | `npm test` | **68/68**, 0 falhas/skips. |
-| Navegador, HTTPS localhost sintético | `npm run test:browser` | **17/17**, 0 falhas/skips; 154,4 s. |
+| Backend, PostgreSQL descartável | `npm test` | **1.119/1.119**, 30 suítes, 0 falhas/skips; 543,0 s. |
+| Frontend, unidades/contratos | `npm test` | **69/69**, 0 falhas/skips. |
+| Navegador, HTTPS localhost sintético | `npm run test:browser` | **17/17**, 0 falhas/skips; 205,1 s. |
 | Build Frontend | `npm run build` | Exit 0; compilação e geração de páginas concluídas. |
 | Lint Frontend | `npm run lint -- --max-warnings=0` | Exit 0; **0 erros e 0 avisos**, sem supressões. |
 | Diff/segredos novos | `git diff --check` e revisão dos arquivos adicionados | Sem erros de whitespace; nenhum padrão novo de chave privada, API Key ou token real detectado. |
@@ -91,9 +91,9 @@ Ambiente de verificação: Windows, Node 24.18.0, npm 11.16.0, PostgreSQL 18.4; 
 
 As primeiras execuções expuseram interferência entre fixtures criptográficos, espera incorreta de hidratação do campo mascarado e a cota compartilhada do BFF; foram corrigidas antes das execuções finais acima. Testes focais adicionais validaram o parser 8KiB, consulta histórica na composição production e logout após perda de permissão/auditoria falha. Não se contabilizaram execuções falhas como aprovadas.
 
-Base desta sprint BE: `4d45ad268712582be8355d45e1782918177c0d19`. Base FE: `cbeb56988983bc0cc811c9d35c30516de0c7f5a8`. Commit FE desta sprint: **`a4ea2391e7af8351e3294879354556fc50e78722`**. O commit BE contém este documento; obter seu SHA com `git rev-parse HEAD` após o fechamento. Ambos permanecem exclusivamente na branch autorizada, sem push/merge/deploy. Nenhuma migration, tabela ou funcionalidade existente foi removida.
+Base deste fechamento BE: `c98e03030de0e89d3c288ca31ba254ebf9b56902`. Base FE: `a4ea2391e7af8351e3294879354556fc50e78722`. Commit FE deste fechamento: **`5514dddb7196ea66c4248f8f5d72513409765559`**. O commit BE contém este documento; obter seu SHA com `git rev-parse HEAD` após o fechamento. Ambos permanecem exclusivamente na branch autorizada, sem push/merge/deploy. Nenhuma migration ou tabela foi removida. A impressão de pedidos foi deliberadamente desativada na candidata conforme autorização posterior, descrita ao final.
 
-Arquivos principais: `src/infinitepayServerComposition.js`, `src/services/operationalSocketDestination.js`, `src/services/administrativePaymentReconciliation.js`, controles/serviços existentes e seis testes de integração novos no BE; acompanhamento, modal/aba financeira, logout, loaders e cinco testes de contratos novos no FE. O diff de cada commit contém o inventário integral; os 37 arquivos FE incluem as correções de lint dos hooks/formulários, sem CSS ou regras de preços.
+Histórico dos fechamentos funcionais anteriores: `src/infinitepayServerComposition.js`, `src/services/operationalSocketDestination.js`, `src/services/administrativePaymentReconciliation.js`, controles/serviços e testes de integração no BE; acompanhamento, modal/aba financeira, logout, loaders e contratos no FE. O diff de cada commit contém o inventário integral. O delta atual se restringe à proteção/desativação QZ, seus testes e este relatório, sem CSS ou regras de preços.
 
 ## Checklist executável da janela futura
 
@@ -163,7 +163,7 @@ Aplicação real do lote depende de autorização da janela depois do ensaio no 
 
 | Natureza | Bloqueio / ação concreta |
 |---|---|
-| Segurança, crítico | [Plano QZ/PEM existente](PLANO_SEGURANCA_QZ_PEM.md): exposição histórica, custódia/identidade e assinador operacional continuam sem aceite suficiente. Nenhum novo protótipo ou impressão neste fechamento. |
+| Segurança QZ | Assinatura anônima bloqueada na candidata e impressão pública desativada. [Plano QZ/PEM existente](PLANO_SEGURANCA_QZ_PEM.md): identidade/custódia e material privado histórico permanecem pendentes para qualquer impressão futura. Nenhum novo protótipo, chave operacional ou impressão neste fechamento. |
 | Contrato externo | Autenticidade/replay e entrega/retry completo de webhook; IDs suficientes sem browser; idempotência/recuperação após timeout de criação; prova independente de liquidação/repasse. Estorno financeiro automatizado/T24 foi adiado para versão futura e não impede o ensaio/implantação desligada. Não foram inventadas garantias. |
 | Operação/infraestrutura | HTTPS/proxy definitivo, firewall, supervisor/alertas, custódia, backup/restauração real/RPO/RTO e política de continuidade das aprovações ainda exigem execução/aceite. |
 | Proprietário | Autorizar inventário/lote real de migrations e grants, implantação, habilitação comercial e ensaio operacional final. Nenhuma dessas autorizações decorre dos testes. |
@@ -301,7 +301,7 @@ Rollback: desligar novas criações, preservar ingress de webhook, drenar worker
 1. Estação/usuário/impressora de homologação identificados, sem conexão com produção; conferência de domínio, sessão e permissões. Antes do aceite, autorizar especificamente o uso físico dessa estação e aprovar a identidade/custódia.
 2. No clone isolado, confirmar pedido sintético pelo provedor mock: uma liberação, uma outbox e recibo lógico persistido. Desconectar/reconectar Socket e reiniciar processo; recuperar pela lista e consumidor sem duplicação lógica. Os testes automatizados existentes cobrem esse trecho.
 3. Somente no futuro aceite físico autorizado: induzir indisponibilidade do QZ/impressora, conferir pedido pago persistido e alerta; reimpressão manual com autorização fresca; conferir quantidade e conteúdo físico com o operador. Registrar recebimento lógico, solicitação de impressão e confirmação humana em momentos separados. Não afirmar exactly-once físico a partir da promise de impressão.
-4. O caminho protegido existente não cai no assinador anônimo quando selecionado. **Ainda é `secure-test`, com guarda de banco descartável, e não está pronto para ser ligado em produção apenas por variável.** A integração operacional exige autorização para alterar esse módulo e remover suas limitações de teste com identidade/custódia certificadas; está fora desta sprint por restrição expressa.
+4. A candidata atual nunca monta o assinador anônimo. **O caminho protegido exige NODE_ENV=test, secure-test e runtime privado com banco descartável. Em produção ele permanece bloqueado inclusive com runtime/chaves/configuração presentes.** Não há flag que habilite impressão operacional nesta versão. Integração operacional futura exige autorização própria, identidade/custódia certificadas e T23 físico; não se deve remover os gates para passar no aceite.
 5. Identidade ativa: operador pode usar o script existente (somente fingerprints públicos), sem enviar PEM/chaves pelo chat:
 
 ```powershell
@@ -316,9 +316,9 @@ Se a identidade ativa coincidir com a histórica exposta, planejar substituiçã
 
 Parecer atualizado: desenvolvimento local deste fluxo administrativo/saúde/alertas concluído conforme os testes finais registrados; T23 físico permanece pendente e T24 foi adiado pelo proprietário para uma versão futura. Segurança QZ, ingresso definitivo, permissões explícitas, backup/restore do ambiente definitivo e política de supervisão exigem ações/autorizações próprias. **NO-GO comercial** até o aceite aplicável; o adiamento de T24 não autoriza contornar nenhum desses controles. Não há ativação automática ou nova fase genérica a executar.
 
-## Pré-implantação — ensaio executado e decisão de publicação
+## Pré-implantação — ensaio executado antes do bloqueio QZ definitivo
 
-Execução local em 29/10/2026, sobre BE `3a1cf01b6f6872629b7a79b1c2f375c7f7bf931a` e FE `a4ea2391e7af8351e3294879354556fc50e78722`. Somente este relatório foi alterado; código, lockfiles, migrations, QZ/PEM, H1/H4/DEMO, aparência e main permanecem intactos. Nenhum push, merge, deploy ou acesso ao ambiente definitivo ocorreu.
+Execução anterior em 29/10/2026, registrada no commit BE `c98e03030de0e89d3c288ca31ba254ebf9b56902`, sobre BE `3a1cf01b6f6872629b7a79b1c2f375c7f7bf931a` e FE `a4ea2391e7af8351e3294879354556fc50e78722`. Naquela execução somente este relatório foi alterado. As evidências de migrations/backup continuam válidas; a conclusão sobre alcance do assinador abaixo descreve o defeito anterior, corrigido no fechamento definitivo. Nenhum push, merge, deploy ou acesso ao ambiente definitivo ocorreu.
 
 | Verificação desta execução | Resultado e limite |
 |---|---|
@@ -387,8 +387,30 @@ O proprietário identifica pedido, pagamento original e direito/valor aplicável
 
 Sem contrato/prova independente homologada, a conciliação permanece AGUARDANDO_PROVA_INDEPENDENTE; não marcar ESTORNADA por SQL, não cancelar pedido como prova de devolução, não reduzir automaticamente receitas/taxas. O controle externo desses reembolsos deve integrar o fechamento financeiro manual do proprietário, pois o painel não comprova automaticamente a devolução. Preservar pedido, produção, tentativa, eventos e recibos. O adiamento não suspende o tratamento de reembolsos aplicáveis e não altera permissões sozinho.
 
-### Decisão atual
+### Fechamento definitivo autorizado — proteção QZ da candidata
 
-**Ensaios locais de migrations e backup/restauração: APROVADOS. Preparação local: CONCLUÍDA. Exposição pública da candidata padrão: NO-GO**, mesmo com checkout desligado, por `/qz/assinar` legado sem autenticação da operação. Essa restrição não depende de ter a impressora presente. Não se resolveu usando flag secure-test/inválida em produção ou alterando o módulo QZ.
+O proprietário autorizou desativar impressão na candidata, eliminando o handler legado e o fallback de navegador. `src/routes/Qz.Routes.js` não importa o controller operacional nem registra `post('/assinar',legacySign)`. Toda requisição que alcança o roteador QZ fora de NODE_ENV=test + secure-test retorna503, sem assinatura; configuração ausente, legacy, chave presente ou runtime instalado não liberam produção. Middlewares gerais ainda podem responder antes, por exemplo ao preflight CORS, sem executar assinatura. O construtor do runtime também recusa perfis não test. O controller e o PEM antigos não foram modificados nem usados.
 
-Para autorizar deploy público, o proprietário deve aprovar uma solução operacional específica para impedir assinatura anônima sem interromper a impressão existente (integração protegida ou perímetro comprovado compatível); o ambiente Render deve comprovar proxy/HTTPS/cookies e o banco definitivo deve comprovar identidade/lote/backup/grants. Não foi criada funcionalidade nova, nem se exige outra auditoria genérica. T23 aguarda a outra estação/impressora; T24 está adiado e não é bloqueador da primeira versão. Publicação da branch, merge, deploy e ativação comercial seguem autorizações distintas, ainda não concedidas nesta tarefa.
+No Frontend, qzService não registra callbacks legados. `qzPrintingEnabled` é false em production/development/perfil ausente, mesmo com flag secure-test, certificado e estação configurados. Ações de conectar/imprimir recusam sem HTTP ou conexão ao Tray. PedidosClient mantém a autorização financeira do pedido e comunica a desativação; remove o fallback window.print e o cupom invisível associado a ele. NotificationListener preserva Socket/lista/som e não agenda impressão. CSS/layout, preços, comprovantes e relatórios não foram alterados; a ação explícita de impressão de relatório é independente e não serve de fallback QZ/comanda.
+
+**Impacto de um futuro deploy:** nenhuma comanda será impressa automaticamente ou pelo botão de impressão de pedidos, inclusive Dinheiro/Débito/PDV. Os pedidos continuam registrados/consultáveis; comprovantes financeiros e exportações de relatórios permanecem disponíveis. Não existe impressão operacional homologada nesta candidata. Não há alteração na instalação em uso enquanto não houver deploy. **O deploy permanece bloqueado até o proprietário autorizar expressamente essa perda temporária de impressão**, além do aceite do ambiente definitivo. Não desligar/alterar a configuração persistida da empresa para mascarar esse impacto.
+
+Fixtures reutilizam o protocolo protegido existente com assinaturas/Tray falsos, restritos a test. Foram eliminadas as expectativas antigas de fallback legado; testes da pré-imagem, autenticação, CSRF, idempotência, revogação e timeout continuam presentes. A alteração de HTML informado pelo navegador é ignorada em favor do documento autorizado pelo servidor. Uma revisão independente do delta não encontrou achados acionáveis; não equivale a impressão física.
+
+Rastreabilidade: base BE `c98e03030de0e89d3c288ca31ba254ebf9b56902`, base FE `a4ea2391e7af8351e3294879354556fc50e78722`; commit FE deste fechamento `5514dddb7196ea66c4248f8f5d72513409765559`. O commit BE que contém este relatório fecha o delta de proteção. Nenhuma migration/dependência foi criada ou modificada. A suíte focal QZ passou 63/63; Frontend completo 69/69; navegador 17/17 (205,1s); build de produção e lint estrito exit0. A regra de AGENTS.md inserida automaticamente pelo Next foi removida conferindo-se a igualdade com o arquivo original; nenhuma instrução do usuário foi descartada.
+
+A primeira execução Backend teve 1.114 aprovados/5 falhos em 1.119: os cinco casos de creditDiagnosis.test.js exigem a porta 55439 e o cluster novo havia sido iniciado em porta aleatória. A causa foi confirmada comparando profile.port fixo com inet_server_port. Confirmou-se que 55439 estava livre; apenas o cluster próprio `qz-final-pg-*`, com banco sintético infinitepay_phase1_test, foi parado/reiniciado nessa porta. O cluster H4 e seus arquivos não foram acessados/alterados. A execução falha não é aprovação; uma nova suíte integral foi exigida após corrigir o ambiente.
+
+**Resultado definitivo dessa repetição integral: 1.119/1.119 Backend, 30 suítes, zero falhas/skips, 543,0s.** Frontend 69/69, navegador 17/17, build e lint estrito aprovados. Os novos testes foram observados falhando antes da correção do handler/política e aprovados depois. Não houve impressão física, conexão ao Tray instalado, uso de chave operacional, requisição financeira real ou migration em banco existente do usuário. O certificado/TLS e o PostgreSQL da regressão eram novos e descartáveis. T23 físico não executado; T24 real não executado e adiado.
+
+Após a regressão, confirmou-se a parada e removeu-se somente o cluster qz-final-pg-* e o TLS qz-final-tls-* desta execução, verificando os caminhos absolutos sob outputs. Evidências e metadados ficam fora do Git; não há dump, log, chave sintética ou relatório temporário no commit.
+
+Preparação final permanece: NODE_ENV=production, INFINITEPAY_MODE=production, bind/PORT e HTTPS/proxy estritos já descritos; config_infinitepay.ativo=false e INFINITEPAY_CHECKOUT_ENABLED/WORKER_ENABLED/VERIFY_ENABLED/DELIVERY_ENABLED=false. `QZ_SIGNING_MODE=disabled` e `NEXT_PUBLIC_QZ_SIGNING_MODE=disabled` podem explicitar o estado, mas a ausência dessas variáveis também bloqueia a impressão. Nunca usar NODE_ENV=test/secure-test no alvo público. Health, cookies e CSRF continuam nos contratos existentes. Conferir/desativar auto-deploy de Backend e Frontend ANTES de autorizar push; nada foi consultado ou alterado na Render.
+
+Nenhum segredo novo foi adicionado. A conferência de metadados confirma que `private-key.pem` histórico ainda é rastreado; não foi aberto, copiado, usado ou alterado. Portanto não se afirma ausência absoluta de material privado no histórico/checkout Git. A publicação exige custódia/acesso apropriados ao repositório; identidade ativa/rotação/remoção desse material permanecem decisões próprias autorizadas, especialmente antes de qualquer retomada de impressão.
+
+Ordem da janela futura: autorizar push dos SHAs revisados (sem auto-deploy); autorizar separadamente merge se desejado; conferir backup restaurável/identidade/ledger/grants e aprovar lote exato; aplicar migrations antes do boot da candidata; deploy Backend desligado, depois Frontend desligado, aceitando a impressão de pedidos indisponível. Suspender o uso administrativo durante o corte e exigir recarga/fechamento das abas antigas antes do aceite: JavaScript já carregado de uma versão anterior pode conservar seu fallback local de navegador, que o Backend não controla; o Backend novo já recusará suas assinaturas. Conferir no smoke que o Frontend atualizado foi carregado. Sem seeds, down ou exclusão de evidências. Nenhum destes comandos foi executado contra o alvo definitivo.
+
+Smoke após deploy autorizado: health/live e health/ready200; login/logout e cookies nos domínios finais; Origin/CSRF incorretos e permissões ausentes recusados; controle preparado com worker parado; config ativo=false; checkout e quatro flags desligados; POST /qz/assinar retorna503 sem fornecer assinatura, inclusive com sessão; botão de comanda informa desativação, sem diálogo nativo nem conexão QZ; Socket/reconexão/lista e consultas legadas/PDV/relatórios funcionam. Não inserir pedidos/eventos falsos no banco real nem disparar pagamento/check para esse smoke; ensaios de escrita continuam isolados.
+
+Publicação, merge, deploy e ativação comercial continuam autorizações independentes. T23 permanece pendente, T24 adiado por decisão do proprietário. Liberação comercial continua NO-GO até o aceite aplicável de operação/impressão, infraestrutura, banco e supervisão; o bloqueio específico de assinatura anônima da candidata está corrigido.

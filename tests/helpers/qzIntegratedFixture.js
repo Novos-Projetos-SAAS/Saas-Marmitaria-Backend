@@ -5,11 +5,11 @@ import {createQzRoutes} from '../../src/routes/Qz.Routes.js';
 export async function createQzIntegratedFixture(identity) {
     const f=await createQzSigningFixture(identity);f.qzMode='secure-test';f.legacyCalls=0;
     try {
-        f.createProtectedServer=async({runtime}={})=>{
+        f.createProtectedServer=async({runtime,environment='test'}={})=>{
             if(runtime===undefined)runtime=await f.anotherSecureRuntime();
             const request=await f.additionalServer({mount:app=>{
                 app.use(express.json());app.locals.qzSecureSigning=runtime;
-                app.use('/qz',createQzRoutes({mode:()=>f.qzMode,legacySign:(req,res)=>{f.legacyCalls++;res.send('LEGACY_REFERENCE');}}));
+                app.use('/qz',createQzRoutes({mode:()=>f.qzMode,environment:()=>environment,legacySign:(req,res)=>{f.legacyCalls++;res.send('LEGACY_REFERENCE');}}));
             }});
             const call=(path,body,options)=>request('/qz'+path,body,options);call.close=request.close;return call;
         };

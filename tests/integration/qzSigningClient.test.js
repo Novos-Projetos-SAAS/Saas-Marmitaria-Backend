@@ -4,7 +4,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {createSyntheticQzIdentity,createQzSigningFixture,syntheticQz} from '../helpers/qzSigningFixture.js';
 import {createFrontendQzHarness} from '../helpers/qzFrontendHarness.js';
 
-describe('synthetic integration of the unchanged QZ frontend and protected signer',{concurrency:false,timeout:120000},()=>{
+describe('synthetic integration of the test-only QZ frontend and protected signer',{concurrency:false,timeout:120000},()=>{
     let identity,wrongIdentity,f,client;
     before(async()=>{identity=await createSyntheticQzIdentity();wrongIdentity=await createSyntheticQzIdentity();});
     after(async()=>{await Promise.allSettled([identity?.close(),wrongIdentity?.close()]);});
@@ -23,7 +23,7 @@ describe('synthetic integration of the unchanged QZ frontend and protected signe
         const {body,id}=await prepare();await f.db('pedidos').where({id:f.doc.pedido_id}).update({nome_cliente:'SYNTHETIC OTHER RECIPIENT'});
         assert.equal((await f.request('/sign',{intentId:id,request:body.request})).status,403);assert.equal(f.signCalls,0);
     });
-    test('unchanged qzService signs server-derived paid order HTML through authenticated HTTPS and the fake Tray verifies it',async()=>{
+    test('test-only qzService signs server-derived paid order HTML through authenticated HTTPS and the fake Tray verifies it',async()=>{
         const doc=await f.document({online:true,status:'PAGA',verified:true});client=await createFrontendQzHarness({f,identity,document:doc});
         assert.equal(await client.print(),true);assert.equal(client.state.acceptedPrints,1);assert.equal(client.state.verifiedSignatures,2);
         assert.equal(client.state.csrfCalls,1);assert.equal(client.state.physicalPrinting,false);
@@ -56,9 +56,9 @@ describe('synthetic integration of the unchanged QZ frontend and protected signe
         }});
         await assert.rejects(client.print());assert.equal(client.state.acceptedPrints,0);assert.equal(f.signCalls,1);
     });
-    test('sending arbitrary HTML through the original print API cannot replace the server-owned document',async()=>{
-        client=await createFrontendQzHarness({f,identity});await assert.rejects(client.print('<html>UNAUTHORIZED</html>'));
-        assert.equal(client.state.acceptedPrints,0);assert.equal(f.signCalls,1);
+    test('browser HTML is ignored in favor of the server-owned approved document',async()=>{
+        client=await createFrontendQzHarness({f,identity});assert.equal(await client.print('<html>UNAUTHORIZED</html>'),true);
+        assert.equal(client.state.acceptedPrints,1);assert.equal(f.signCalls,2);
     });
     test('signature without a persisted intention is refused',async()=>{
         await f.bootstrap();assert.equal((await f.request('/sign',{intentId:randomUUID(),request:'a'.repeat(64)})).status,403);assert.equal(f.signCalls,0);
@@ -67,8 +67,8 @@ describe('synthetic integration of the unchanged QZ frontend and protected signe
         let release,reached;const entered=new Promise(accept=>reached=accept),gate=new Promise(accept=>release=accept);
         client=await createFrontendQzHarness({f,identity,afterPrepare:async({call})=>{if(call==='print'){reached();await gate;}}});
         await client.connect();const first=client.print();await Promise.race([entered,first.then(()=>{throw new Error('Expected prepared print intent.');})]);
-        try{await assert.rejects(client.print());}finally{release();}
-        assert.equal(await first,true);assert.equal(client.state.acceptedPrints,1);assert.equal(Number((await f.db('qz_proto_intencoes').where({chamada:'print'}).count('* as n').first()).n),1);
+        const duplicate=assert.rejects(client.print());release();
+        assert.equal(await first,true);await duplicate;assert.equal(client.state.acceptedPrints,1);assert.equal(Number((await f.db('qz_proto_intencoes').where({chamada:'print'}).count('* as n').first()).n),1);
     });
     test('lost sign response never prints or retries automatically and the persisted claim survives server restart',async()=>{
         client=await createFrontendQzHarness({f,identity,afterSign:({call})=>{if(call==='print')throw new Error('SYNTHETIC_TIMEOUT');}});

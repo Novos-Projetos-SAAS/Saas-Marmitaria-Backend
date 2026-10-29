@@ -100,7 +100,7 @@ export async function createQzSigningFixture(identity) {
         f.service=await f.anotherService();
         f.anotherSecureRuntime=options=>createQzSecureSigning({db:f.db,origins:['https://shop.invalid.test'],sessionSecret:()=>sessionSecret,now:()=>new Date(f.clock),
             signDigest:async digest=>{f.signCalls++;if(f.signFailure)throw new Error('SYNTHETIC_PRIVATE_SECRET');await f.onSign?.(digest);return identity.sign(digest);},
-            certificate:identity.cert,deriveDocument:f.deriveDocument,env:{QZ_SIGNING_MODE:'secure-test'},...options});
+            certificate:identity.cert,deriveDocument:f.deriveDocument,env:{NODE_ENV:'test',QZ_SIGNING_MODE:'secure-test'},...options});
         f.additionalServer=async({globalLimit=100,secureContract=false,mount}={})=>{
             const app=express();app.use(cookieParser());if(mount)await mount(app);else app.use(createQzSigningPrototypeRouter({service:f.service,globalLimit,secureContract}));
             const server=createServer(identity.tls,app);await new Promise((accept,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',accept);});
