@@ -12,6 +12,7 @@ import {createTestDatabase} from './testDatabase.js';
 import {infinitepaySessionCsrf} from '../../src/utils/infinitepaySessionCsrf.js';
 import {createQzSigningPrototype,PROPOSED_QZ_PERMISSION} from '../../src/homologation/qzSigningPrototype.js';
 import {createQzSigningPrototypeRouter} from '../../src/homologation/qzSigningPrototypeRoutes.js';
+import {createQzSecureSigning} from '../../src/services/qzSecureSigning.js';
 
 const require=createRequire(import.meta.url);
 export const syntheticQz=require('../../../Saas-Marmitaria-Frontend/node_modules/qz-tray/qz-tray.js');
@@ -38,30 +39,6 @@ export async function createSyntheticQzIdentity() {
     }catch(error){await cleanup();throw error;}
 }
 
-async function prototypeTables(db) {
-    await db.schema.createTable('qz_proto_estacoes',t=>{
-        t.uuid('id').primary();t.integer('usuario_id').notNullable().references('id').inTable('usuarios').onDelete('RESTRICT');
-        t.text('impressora').notNullable();t.boolean('ativo').notNullable().defaultTo(true);
-    });
-    await db.schema.createTable('qz_proto_documentos',t=>{
-        t.uuid('id').primary();t.uuid('estacao_id').notNullable().references('id').inTable('qz_proto_estacoes').onDelete('RESTRICT');
-        t.integer('pedido_id').notNullable().references('id').inTable('pedidos').onDelete('RESTRICT');t.jsonb('params').notNullable();t.string('source_hash',64).notNullable();t.timestamp('expira_em',{useTz:true}).notNullable();
-    });
-    await db.schema.createTable('qz_proto_intencoes',t=>{
-        t.uuid('id').primary();t.integer('usuario_id').notNullable().references('id').inTable('usuarios').onDelete('RESTRICT');t.string('sessao_hash',64).notNullable();
-        t.uuid('estacao_id').notNullable().references('id').inTable('qz_proto_estacoes').onDelete('RESTRICT');
-        t.uuid('documento_id').unique().references('id').inTable('qz_proto_documentos').onDelete('RESTRICT');
-        t.text('chamada').notNullable();t.string('request_digest',64).notNullable().unique();t.string('params_hash',64).notNullable();t.string('operacao_hash',64).notNullable();t.bigInteger('request_timestamp').notNullable();
-        t.text('estado').notNullable();t.check("estado IN ('RESERVADA','CONSUMIDA','ASSINADA')");
-        t.timestamp('criado_em',{useTz:true}).notNullable();t.timestamp('expira_em',{useTz:true}).notNullable();
-    });
-    await db.schema.createTable('qz_proto_auditoria',t=>{
-        t.bigIncrements('id');t.integer('usuario_id').references('id').inTable('usuarios').onDelete('RESTRICT');
-        t.uuid('intencao_id').references('id').inTable('qz_proto_intencoes').onDelete('RESTRICT');t.string('operacao',20).notNullable();
-        t.string('decisao',5).notNullable();t.string('codigo',40).notNullable();t.timestamp('criado_em',{useTz:true}).notNullable();t.index(['usuario_id','criado_em']);
-    });
-}
-
 export async function createQzSigningFixture(identity) {
     const database=await createTestDatabase(),f={db:database.db,schema:database.schema,clock:new Date(),signCalls:0,signFailure:false},servers=new Set();
     const sessionSecret=randomBytes(32).toString('base64');
@@ -71,10 +48,10 @@ export async function createQzSigningFixture(identity) {
         try{await database.close();}finally{if(results.some(result=>result.status==='rejected'))throw new Error('Encerramento HTTPS incompleto.');}
     };
     try {
-        await f.db.migrate.latest();await prototypeTables(f.db);
+        await f.db.migrate.latest();
         const [role]=await f.db('niveis_acesso').insert({nome:'admin',descricao:'SYNTHETIC ONLY'}).returning('*');
         [f.actor]=await f.db('usuarios').insert({nome:'SYNTHETIC',email:'qz@invalid.test',senha_hash:'SYNTHETIC',nivel_acesso_id:role.id}).returning('*');
-        const [permission]=await f.db('permissoes').insert({nome:PROPOSED_QZ_PERMISSION,descricao:'PROPOSED; SYNTHETIC FIXTURE ONLY'}).returning('*');
+        const permission=await f.db('permissoes').where({nome:PROPOSED_QZ_PERMISSION}).first();
         await f.db('permissoes_usuarios').insert({usuario_id:f.actor.id,permissao_id:permission.id});
         await f.db('metodos_pagamento').insert([['DINHEIRO','DINHEIRO'],['CARTAO_DEBITO','DEBITO'],['PIX','PIX']].map(([codigo,tipo_financeiro])=>({nome:'SYNTHETIC '+codigo,codigo,tipo_financeiro})));
         [f.station]=await f.db('qz_proto_estacoes').insert({id:randomUUID(),usuario_id:f.actor.id,impressora:printerName}).returning('*');
@@ -121,14 +98,17 @@ export async function createQzSigningFixture(identity) {
         f.anotherService=options=>createQzSigningPrototype({db:f.db,origins:['https://shop.invalid.test'],sessionSecret:()=>sessionSecret,now:()=>new Date(f.clock),
             signDigest:async digest=>{f.signCalls++;if(f.signFailure)throw new Error('SYNTHETIC_PRIVATE_SECRET');await f.onSign?.(digest);return identity.sign(digest);},verifyDigest:identity.verify,deriveDocument:f.deriveDocument,...options});
         f.service=await f.anotherService();
-        f.additionalServer=async({globalLimit=100}={})=>{
-            const app=express();app.use(cookieParser());app.use(createQzSigningPrototypeRouter({service:f.service,globalLimit}));
+        f.anotherSecureRuntime=options=>createQzSecureSigning({db:f.db,origins:['https://shop.invalid.test'],sessionSecret:()=>sessionSecret,now:()=>new Date(f.clock),
+            signDigest:async digest=>{f.signCalls++;if(f.signFailure)throw new Error('SYNTHETIC_PRIVATE_SECRET');await f.onSign?.(digest);return identity.sign(digest);},
+            certificate:identity.cert,deriveDocument:f.deriveDocument,env:{QZ_SIGNING_MODE:'secure-test'},...options});
+        f.additionalServer=async({globalLimit=100,secureContract=false,mount}={})=>{
+            const app=express();app.use(cookieParser());if(mount)await mount(app);else app.use(createQzSigningPrototypeRouter({service:f.service,globalLimit,secureContract}));
             const server=createServer(identity.tls,app);await new Promise((accept,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',accept);});
             let closed=false;
             const close=async()=>{if(closed)return;closed=true;server.closeAllConnections();await new Promise(accept=>server.close(accept));servers.delete(close);};servers.add(close);
-            const request=(path,body,{method='POST',headers={}}={})=>new Promise((accept,reject)=>{
+            const request=(path,body,{method='POST',headers={},signal}={})=>new Promise((accept,reject)=>{
                 const payload=body===undefined?undefined:JSON.stringify(body);
-                const req=httpsRequest({hostname:'127.0.0.1',port:server.address().port,path,method,servername:'localhost',ca:identity.tls.cert,
+                const req=httpsRequest({hostname:'127.0.0.1',port:server.address().port,path,method,signal,servername:'localhost',ca:identity.tls.cert,
                     headers:{Origin:f.session.origin,Cookie:'token='+f.session.token,'X-Infinitepay-CSRF':f.session.csrf || '',
                         ...(payload===undefined?{}:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(payload)}),...headers}},response=>{
                     let text='';response.setEncoding('utf8');response.on('data',chunk=>text+=chunk);response.on('end',()=>{let data;try{data=JSON.parse(text);}catch{}accept({status:response.statusCode,headers:response.headers,text,data});});

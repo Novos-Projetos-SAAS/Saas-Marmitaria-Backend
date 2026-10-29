@@ -224,3 +224,74 @@ O custodiante autorizado deverá obter o **certificado de assinatura** efetivame
 **993 testes Backend aprovados** (20 suites; zero falhas, cancelamentos ou testes ignorados), incluindo **51 casos QZ**: os 24 anteriores e 27 novos testes de vínculo/cliente em `tests/integration/qzSigningClient.test.js`. Pedido pago, não pago/INCERTA, permissão/sessão/CSRF/Origin, hash/pré-imagem/HTML/documento/impressora/destinatário, ausência/replay de intenção, concorrência, perda de resposta, expiração, falha criptográfica/auditoria, certificado/assinatura incorretos, revogação e reinício foram exercitados. Os testes de troca de pedido/destinatário e isolamento do cliente tiveram falha reproduzida antes das correções. Revisão independente do código e do plano concluída sem achado bloqueante remanescente no escopo sintético.
 
 Frontend: **27 unitários e 15 cenários existentes de navegador HTTPS aprovados; build aprovado**, sem alteração de fonte, CSS ou contrato operacional. Lint/estilos fora do escopo, sem correções. Os testes migraram somente schemas novos `iptest_*` descartáveis em `infinitepay_phase1_test`; nenhum schema existente, H1/H2/H3, H4, DEMO ou produção foi migrado. Chaves/certificados de teste foram gerados e descartados; nenhum assinador operacional, Tray ou impressora real foi acionado. Logs/evidências de execução permanecem fora do Git; não houve chamada financeira real, push, merge, deploy, rotação, concessão real de permissão ou montagem de controles comerciais. **NO-GO operacional e de piloto físico permanece até os pré-requisitos e a autorização próprios.**
+
+## Caminho protegido integrado na feature — Fase 5D.8 (28/10/2026)
+
+### Configuração desativada e contrato integrado
+
+O Backend importa o dispatcher protegido nas rotas `/qz`. `QZ_SIGNING_MODE` ausente ou `legacy`, **sem runtime protegido instalado**, preserva a referência legada; não significa que ela seja segura. `secure-test` exige uma instância registrada por `createQzSecureSigning`/`installQzSecureSigning` (`src/services/qzSecureSigning.js`). Flag sozinha, objeto forjado ou configuração inválida resultam em erro fechado. O runtime reutiliza o engine validado, exige certificado público e callback de assinatura, verifica a assinatura criptograficamente e conserva o guard de banco loopback `infinitepay_*test`/schema `iptest_*`. Não lê `QZ_PRIVATE_KEY` nem o PEM operacional para ativar esse caminho.
+
+O servidor implantado não foi alterado. Não há bootstrap automático dessa instância no servidor público; somente os testes a instalam. Uma instância que selecionou proteção ou recebeu runtime válido não pode voltar ao handler legado por remoção/troca da flag. O latch é local à instância do router: no corte futuro, a configuração protegida deverá permanecer fixada também após reinícios; iniciar outro processo sem configuração e sem runtime ainda seleciona a referência legada. Para interromper um piloto, parar o ingresso/serviço ou manter modo bloqueado, **nunca reiniciar em modo legado**.
+
+No Frontend, `NEXT_PUBLIC_QZ_SIGNING_MODE` ausente/`legacy` preserva o contrato anterior. `secure-test` seleciona `src/services/qzSecureTransport.mjs`; valor desconhecido é bloqueado. A estação `NEXT_PUBLIC_QZ_STATION_ID` é contexto de roteamento, não prova de identidade: o servidor exige vínculo com o usuário. O certificado público continua vindo da configuração já existente. Nenhuma dessas configurações foi habilitada no ambiente implantado; todos os ensaios usaram identidades descartáveis.
+
+| Etapa | Contrato da feature protegida |
+|---|---|
+| Sessão/CSRF | `POST /qz/csrf {}` com sessão Cookie existente, HTTPS e Origin autorizada → `{csrfToken}`. POST evita depender de Origin ausente em GET de mesma origem. |
+| Documento | `POST /qz/documento {stationId,pedidoId}` com `X-Infinitepay-CSRF` → documento, estação, pedido, impressora, params completos e expiração. Não aceita HTML, destinatário ou parâmetros do navegador como aprovação. |
+| Intenção | O cliente captura a mensagem QZ exata e calcula SHA-256 real com WebCrypto; `POST /qz/prepare {stationId,documentId?,message,request}`. A descoberta só permite a impressora configurada; impressão exige documento. |
+| Assinatura | `POST /qz/assinar {intentId,request}` com o mesmo CSRF → somente assinatura base64. O caminho seguro não aceita o corpo legado hash-only. `/qz/sign` não é alias de escape. |
+| Falha | Não há repetição automática. Timeout põe o transporte cliente em quarentena até reinício explícito; o banco preserva a intenção consumida/assinada. Não se abre assinatura anônima nem `window.print` no modo seguro. |
+
+O HTML fornecido a `imprimirCupom` pelo navegador é ignorado nesse modo: imprime somente os params aprovados pelo servidor. `NotificationListener.jsx` e `PedidosClient.jsx` passam o ID após `authorizePrintOrder`; não mudaram Socket.IO, CSS, layout ou componente visual do cupom. O fluxo manual seguro informa envio ao QZ, sem afirmar impressão física. O template canônico operacional ainda deverá ser homologado: a composição restrita aos testes usa renderer confiável injetado, derivado de pedido/itens sintéticos, sem tornar o HTML arbitrário do navegador uma fonte confiável.
+
+### Persistência, permissões e validação final
+
+Migration **aditiva** `20261028000200_qz_assinatura_protegida.js`: quatro tabelas QZ com hashes, estados, relacionamentos RESTRICT, índices, digest/intenção/documento únicos e um documento original por pedido, inclusive entre estações. Registra somente o catálogo `impressao.assinar`, sem grant. `down` é forward-only e não apaga estruturas. A preparação de documento serializa por pedido e reutiliza o mesmo registro; assinatura continua com consumo durável antes da chave. Reimpressão depende de futura autorização separada, sem contornar a unicidade desta etapa.
+
+Os seeds 03/09 anteriormente concediam todo o catálogo aos administradores; agora excluem apenas `impressao.assinar`, preservando os grants explícitos já existentes e as demais permissões. Nenhum seed foi executado em banco nesta fase; o comportamento foi exercitado com store em memória. Não há bypass administrativo no engine QZ. Revalidações de prazo após leitura, auditoria, atualização e commit final impedem devolver uma assinatura vencida; se o commit já consumiu a intenção, a recusa não a torna reutilizável. Logs livres do controlador legado foram retirados na feature, com erro público fixo; isso não protege o endpoint implantado, que não recebeu deploy.
+
+### Conferência local da identidade pelo custodiante
+
+Somente metadados foram reconferidos: repositório público, `main` remota idêntica a `492c3442ce047b1dc8353d24c237087ea2da85d4`, mesmo blob privado histórico. Chave privada, variáveis operacionais e ambientes implantados não foram consultados. Os fingerprints públicos históricos acima permanecem a referência de comparação, sem presumir correspondência com as versões privadas.
+
+Foi preparado `scripts/qz-public-identity.mjs`. Em PowerShell 7, na raiz Backend, o **responsável autorizado**, em contexto local protegido, poderá conferir um certificado previamente confirmado como público:
+
+```powershell
+node .\scripts\qz-public-identity.mjs --certificate 'C:\caminho-local\certificado-publico.pem'
+```
+
+Para conferir a identidade pública da chave operacional, o custodiante deverá antes obter autorização própria e disponibilizar `QZ_PRIVATE_KEY` pelo mecanismo seguro de custódia, sem colocá-la no comando, transcript, arquivo versionado ou chat. Então, somente em terminal interativo:
+
+```powershell
+node .\scripts\qz-public-identity.mjs --environment
+```
+
+O comando exige digitar `CONFERIR IDENTIDADE PUBLICA QZ`; não carrega `.env`, não aceita arquivo/chave privada por argumento, não grava arquivos, não acessa rede e só emite SHA-256 público SPKI/DER e comparação com o certificado histórico. Erros são fixos, sem dump de material ou variável. A opção operacional **não foi executada com segredo real**; os testes usaram exclusivamente pares descartáveis. Não passar um arquivo privado à opção de certificado.
+
+Igualdade SPKI com o certificado histórico é um alerta de identidade compartilhada, não prova isolada de correspondência com cada arquivo privado histórico. O custodiante deverá atestar essa relação por procedimento interno aprovado, registrando apenas fingerprints públicos e origem lógica. Se a identidade ativa corresponder a material privado comprometido/exposto, **rotação coordenada é obrigatória antes de ativar o fluxo protegido**. Ausência de comprovação mantém bloqueio; um fingerprint diferente não prova custódia segura nem revoga cópias antigas.
+
+### Corte e piloto físico futuros — não executados
+
+1. Infraestrutura/custodiante registram identidade ativa, certificado de assinatura entregue pelo Frontend, confiança em cada estação e comparação com material histórico; o certificado TLS do Tray não substitui essa identidade. Confirmar exposição e necessidade de contenção/rotação.
+2. Quando necessário, obter uma nova identidade de assinatura compatível com a instalação/contrato QZ, em custódia segura, e testar certificado/chave correspondentes. Não gerar confiança operacional a partir de subject igual, assinatura local válida ou certificado histórico.
+3. Planejar distribuição do certificado público/confiança e troca da chave no servidor em janela autorizada, com responsáveis e contingência. Revogar/retirar confiança da identidade comprometida de forma coordenada. Não restaurá-la em rollback; limpeza Git e visibilidade exigem autorizações independentes e não revogam cópias.
+4. Autorizar uma composição de homologação apropriada para a identidade real antes de qualquer piloto. A composição desta entrega recusa bancos operacionais; não remover seu guard, usar `NODE_ENV=test` ou copiar o fixture para contornar a restrição. Migrar somente banco isolado autorizado; não aplicar estas migrations a produção nesta fase.
+5. Conceder a permissão explicitamente a funcionários selecionados, cadastrar estação/impressora exatas e validar usuário/cargo ativos e revogação. Não executar seeds para conceder assinatura. Homologar o renderer canônico do cupom e o documento vinculado ao pedido elegível.
+6. No ambiente autorizado, instalar runtime validado e fixar modo seguro Backend; todos os caminhos de `/qz/assinar` passarão pelo dispatcher protegido no mesmo corte, sem endpoint paralelo anônimo. Publicar o cliente correspondente apenas sob autorização de implantação; remover a configuração ou reiniciar em legado não é uma estratégia de reversão.
+7. Antes do teste físico, validar no navegador real HTTPS, Cookie HttpOnly/Secure/domínio/path/SameSite, credenciais, Origin/CORS exatos, POST CSRF, certificado apresentado e mensagens assinadas. Não relaxar esses controles para resolver uma falha. Testar ausência de sessão/permissão e corpo legado e confirmar zero assinaturas.
+8. O responsável da loja autoriza por escrito janela, uma estação/impressora e um pedido sintético elegível rotulado TESTE. Imprimir uma vez sob observação humana, sem clientes, cozinha, financeiro ou workers comerciais. Confrontar conteúdo, destinatário, legibilidade e contagem física; provar negativos de pedido online não pago/INCERTA sem impressão. Sucesso de `qz.print` é somente envio lógico.
+9. Em timeout/falha, suspender novas intenções/assinaturas e o ingresso do piloto, revogar a estação e consultar registros antes de reimprimir. Não apagar intenção, criar documento substituto ou abrir `window.print`/assinador anônimo como fallback. Se não houver identidade segura/estado conciliável, manter o piloto suspenso.
+10. Recuperar sob supervisão com código/configuração seguros, evidências preservadas e nova autorização explícita quando necessária. Separar assinatura/envio, impressão observada e recibo durável da cozinha. Este último continua bloqueador independente; piloto QZ não autoriza checkout, worker comercial ou produção.
+
+Autorizações necessárias: custodiante para conferência/chaves; infraestrutura/segurança para contenção, exposição, certificados e corte; mantenedores para composição/renderer/migrations e migração do cliente; responsável da loja para janela, estação, impressão física e contingência. Esta fase não concede essas permissões operacionais. **NO-GO para produção permanece, independentemente dos resultados do novo código.**
+
+### Evidência final da feature 5D.8
+
+Regressão final: **1.065 testes Backend aprovados**, zero falhas/cancelamentos/ignorados, incluindo **123 casos QZ** (51 anteriores, 33 de contrato integrado, 31 de schema e 8 de grants/identidade). Frontend: **42 unitários**, sendo 15 QZ, e **15 cenários de navegador HTTPS aprovados**; build aprovado com modo protegido desativado; lint apenas dos arquivos Frontend alterados aprovado. Lint global/estilos fora do escopo. A revisão independente identificou e confirmou correções para grants automáticos e prazo final; novos testes reproduziram as falhas antes da correção. O cliente e as rotas reais da branch foram conectados ao Tray falso, sem adaptador de teste fabricar pré-imagem/CSRF/intenção para o cliente seguro.
+
+O primeiro ensaio de regressão foi bloqueado porque as fixtures antigas exigem nome/porta fixos do banco; não foi contado como aprovado. Sem alterar essas proteções, o cluster **novo e exclusivo**, em diretório temporário próprio, foi reiniciado com a identidade esperada pelas fixtures. A rodada completa foi então executada novamente e aprovada. O cluster histórico não foi iniciado nem consultado; H1/H4/DEMO e produção não foram migrados. Somente schemas novos descartáveis receberam as 39 migrations. Nenhum seed foi executado em PostgreSQL. O cluster temporário foi encerrado e removido após os testes; logs/evidências ficaram fora do Git.
+
+Frontend correspondente: commit local `18ecd0e79a6d5e7df12545ccc425e1d37d8b88d5`. Arquivos: `qzService.js`, novo `qzSecureTransport.mjs`, lógica dos dois chamadores de impressão e `tests/qzSecureTransport.test.mjs`; sem mudança de CSS, layout ou CupomPedido. Backend: serviço/dispatcher/controlador QZ, engine e router reutilizados, migration aditiva e filtros de grants, procedimento local de identidade, fixtures e testes de contrato/schema/grants/identidade, ajuste da lista esperada de migrations e esta atualização permanente. Nenhum PEM/certificado operacional, API Key real, pagamento, QZ Tray ou impressora real foi usado; nenhuma rota nova foi ativada publicamente. Não houve push, merge, deploy ou alteração de main.
+
+Permanece pendente a execução autorizada da conferência de identidade, eventual rotação obrigatória, composição apropriada de homologação, renderer operacional, cookies/CSRF/certificado no navegador real e piloto físico. O retorno de `qz.print` não prova impressão e esta fase não resolve o contrato de recebimento durável da cozinha. **Caminho integrado validado somente em testes; sem GO para produção ou autorização implícita de piloto.**

@@ -65,7 +65,7 @@ export async function createQzSigningPrototype({db,origins,sessionSecret,signDig
     const audit=(reader,operation,decision,code,actor,intentId=null)=>reader('qz_proto_auditoria').insert({operacao:operation,decisao:decision,codigo:code,
         usuario_id:actor?.id || null,intencao_id:intentId,criado_em:time()});
     async function quota(trx,actor) {
-        const count=Number((await trx('qz_proto_auditoria').where({usuario_id:actor.id}).whereIn('operacao',['PREPARE','SIGN'])
+        const count=Number((await trx('qz_proto_auditoria').where({usuario_id:actor.id}).whereIn('operacao',['DOCUMENT','PREPARE','SIGN'])
             .whereNot('codigo','SIGNED').where('criado_em','>',new Date(time().getTime()-60000)).count('* as n').first()).n);
         if(count>=maxCalls)refuse('QZ_RATE_LIMIT',429);
     }
@@ -126,6 +126,30 @@ export async function createQzSigningPrototype({db,origins,sessionSecret,signDig
             });
         });
     }
+    async function issueDocument(request) {
+        return execute('DOCUMENT',request,async actor=>{
+            record(request,['session','stationId','pedidoId']);
+            if(!uuid(request.stationId) || !Number.isSafeInteger(request.pedidoId) || request.pedidoId<1)refuse('QZ_INVALID_REQUEST',400);
+            return db.transaction(async trx=>{
+                await lock(trx,actor);await authenticate(request.session,{reader:trx});await quota(trx,actor);
+                await trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?,0))',['qz-document:'+deployment+':'+request.pedidoId]);
+                const station=await trx('qz_proto_estacoes').where({id:request.stationId,usuario_id:actor.id,ativo:true}).first();
+                if(!station || !await aplicarElegibilidadeOperacional(trx('pedidos'),{confirmedStates:['PAGA','LIQUIDADA']})
+                    .where({'pedidos.id':request.pedidoId}).whereNull('pedidos.deletado_em').first('pedidos.id'))refuse('QZ_COMMAND_DENIED',403);
+                let document=await trx('qz_proto_documentos').where({pedido_id:request.pedidoId}).first();
+                if(document && (document.estacao_id!==station.id || new Date(document.expira_em)<=time()))refuse('QZ_COMMAND_DENIED',403);
+                const existing=Boolean(document);
+                if(!document) {
+                    const draft={id:randomUUID(),estacao_id:station.id,pedido_id:request.pedidoId},derived=await deriveDocument({reader:trx,station,document:draft});
+                    if(!/^[a-f0-9]{64}$/.test(derived?.sourceHash || ''))refuse('QZ_COMMAND_DENIED',403);
+                    [document]=await trx('qz_proto_documentos').insert({...draft,params:derived.params,source_hash:derived.sourceHash,expira_em:new Date(time().getTime()+300000)}).returning('*');
+                }
+                const allowed=await approvedParams(trx,actor,{stationId:station.id,documentId:document.id,call:'print'});
+                await audit(trx,'DOCUMENT','ALLOW',existing?'DOCUMENT_REUSED':'DOCUMENT_CREATED',actor);
+                return {documentId:document.id,stationId:station.id,pedidoId:document.pedido_id,printer:station.impressora,params:allowed.params,expiresAt:new Date(document.expira_em).toISOString()};
+            });
+        });
+    }
     async function sign(request) {
         return execute('SIGN',request,async actor=>{
             record(request,['session','intentId','request']);
@@ -153,10 +177,16 @@ export async function createQzSigningPrototype({db,origins,sessionSecret,signDig
                 if(!row || new Date(row.expira_em)<=time())refuse('QZ_COMMAND_DENIED',403);
                 const final=await storedAllowed(trx,actor,row);
                 if(paramsHash(final.params)!==row.params_hash || final.bindingHash!==row.operacao_hash)refuse('QZ_COMMAND_DENIED',403);
-                await audit(trx,'SIGN','ALLOW','SIGNED',actor,row.id);await trx('qz_proto_intencoes').where({id:row.id}).update({estado:'ASSINADA'});
+                if(new Date(row.expira_em)<=time())refuse('QZ_COMMAND_DENIED',403);fresh(Number(row.request_timestamp));
+                await audit(trx,'SIGN','ALLOW','SIGNED',actor,row.id);
+                if(new Date(row.expira_em)<=time())refuse('QZ_COMMAND_DENIED',403);
+                await trx('qz_proto_intencoes').where({id:row.id}).update({estado:'ASSINADA'});
+                if(new Date(row.expira_em)<=time())refuse('QZ_COMMAND_DENIED',403);
             });
+            // A slow commit may consume the claim without returning the signature.
+            if(new Date(claimed.expira_em)<=time())refuse('QZ_COMMAND_DENIED',403);fresh(Number(claimed.request_timestamp));
             return signature;
         });
     }
-    return Object.freeze({bootstrap,prepare,sign});
+    return Object.freeze({bootstrap,issueDocument,prepare,sign});
 }

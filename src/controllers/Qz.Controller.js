@@ -85,7 +85,6 @@ export const assinarRequisicaoQZ = (req, res) => {
     try {
         const { request } = req.body;
 
-        console.log("Request:", request);
 
         // Pega a chave já formatada
         const privateKey = getPrivateKey();
@@ -98,12 +97,10 @@ export const assinarRequisicaoQZ = (req, res) => {
         // Assina usando a chave que veio do .env
         const assinatura = signer.sign(privateKey, "base64");
 
-        console.log("Assinatura gerada:", assinatura.substring(0, 50) + "...");
 
         res.send(assinatura);
 
     } catch (e) {
-        console.error(e);
-        res.status(500).send(e.message);
+        res.status(500).send('Assinatura QZ indisponível.');
     }
 };

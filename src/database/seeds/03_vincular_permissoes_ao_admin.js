@@ -13,7 +13,8 @@ export async function seed(knex) {
             deletado_em: null
         })
 
-    const permissoes = await knex('permissoes').select('id');
+    // Assinatura QZ exige concessão explícita, inclusive para administradores.
+    const permissoes = await knex('permissoes').whereNot('nome', 'impressao.assinar').select('id');
 
     if (admins.length == 0 || permissoes.length == 0) {
         console.log(logSymbols.warning, chalk.yellow('Nenhum admin ou permissão encontrada para vincular.'));
@@ -46,7 +47,7 @@ export async function seed(knex) {
         console.log(`\n${logSymbols.success} ${chalk.green('VÍNCULO DE ADMIN CONCLUÍDO')}`);
         console.log(`${logSymbols.success} ${chalk.green(`Foram adicionados ${vinculosParaInserir.length} novos vínculos de permissão.`)}\n`);
     } else {
-        console.log(`\n${logSymbols.info} ${chalk.cyan('Todos os admins já possuem todas as permissões.')}\n`);
+        console.log(`\n${logSymbols.info} ${chalk.cyan('Todos os admins já possuem as permissões de concessão automática.')}\n`);
     }
 
 };

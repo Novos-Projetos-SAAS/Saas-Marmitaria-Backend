@@ -14,8 +14,9 @@ describe('synthetic integration of the unchanged QZ frontend and protected signe
     async function prepare(doc=f.doc){await f.bootstrap();const body=f.command('print',doc),response=await f.request('/prepare',body);assert.equal(response.status,201);return {body,id:response.data.intentId};}
 
     test('an approved document cannot be reassigned to another eligible order after intent creation',async()=>{
-        const {body,id}=await prepare(),other=await f.document();
-        await f.db('qz_proto_documentos').where({id:f.doc.id}).update({pedido_id:other.pedido_id});
+        const {body,id}=await prepare(),method=await f.db('metodos_pagamento').where({codigo:'DINHEIRO'}).first();
+        const [other]=await f.db('pedidos').insert({nome_cliente:'SYNTHETIC OTHER',telefone_cliente:'00000000000',tipo_pedido:'Remoto',metodo_entrega:'Retirada',metodo_pagamento_id:method.id,valor_total:1}).returning('*');
+        await f.db('qz_proto_documentos').where({id:f.doc.id}).update({pedido_id:other.id});
         assert.equal((await f.request('/sign',{intentId:id,request:body.request})).status,403);assert.equal(f.signCalls,0);
     });
     test('a changed order recipient invalidates the persisted approved document before signing',async()=>{

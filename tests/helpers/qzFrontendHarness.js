@@ -2,11 +2,13 @@ import {registerHooks} from 'node:module';
 import {readFileSync} from 'node:fs';
 import {createHash,randomUUID,verify,X509Certificate} from 'node:crypto';
 
-// Load the unchanged frontend service, replacing only its imports. Never mount this transport in the app.
-export async function createFrontendQzHarness({f,identity,document=f.doc,presentedCertificate=identity.cert,headers={},mutate,afterPrepare,afterSign,corruptSignature=false}={}) {
+// Load the frontend service with a private QZ and fake Tray. Integrated mode
+// forwards HTTP only: the frontend itself supplies CSRF, preimage and intent.
+export async function createFrontendQzHarness({f,identity,document=f.doc,presentedCertificate=identity.cert,headers={},mutate,afterPrepare,afterSign,corruptSignature=false,integrated=false,clientMode='secure-test',stationId=f.station.id}={}) {
     const key='synthetic-qz-client-'+randomUUID(),registry=Symbol.for(key),preimages=new Map(),logs=[],sockets=new Set();
     const state={acceptedPrints:0,verifiedSignatures:0,prepareCalls:0,signCalls:0,csrfCalls:0,physicalPrinting:false};
     const oldCertificate=process.env.NEXT_PUBLIC_QZ_CERTIFICATE,oldConsole=globalThis.console;
+    const previousMode=process.env.NEXT_PUBLIC_QZ_SIGNING_MODE,previousStation=process.env.NEXT_PUBLIC_QZ_STATION_ID;
     const serviceFile=new URL('../../../Saas-Marmitaria-Frontend/src/services/qzService.js',import.meta.url),serviceUrl=serviceFile.href+'?fixture='+key;
     const libraryFile=new URL('../../../Saas-Marmitaria-Frontend/node_modules/qz-tray/qz-tray.js',import.meta.url),libraryUrl='qz-fixture:'+key+'/library';
     let hooks,service,csrf,qz,closed=false;
@@ -14,6 +16,8 @@ export async function createFrontendQzHarness({f,identity,document=f.doc,present
     const collect=(...values)=>logs.push(values.map(value=>value instanceof Error?value.message:typeof value==='string'?value:JSON.stringify(value)).join(' '));
     globalThis.console={...oldConsole,log:collect,info:collect,warn:collect,error:collect};
     process.env.NEXT_PUBLIC_QZ_CERTIFICATE=presentedCertificate;
+    process.env.NEXT_PUBLIC_QZ_SIGNING_MODE=integrated?clientMode:'legacy';
+    if(stationId===undefined)delete process.env.NEXT_PUBLIC_QZ_STATION_ID;else process.env.NEXT_PUBLIC_QZ_STATION_ID=stationId;
     const trusted=new X509Certificate(identity.cert);
     class FakeWebSocket {
         static CONNECTING=0;static OPEN=1;static CLOSING=2;static CLOSED=3;
@@ -32,7 +36,23 @@ export async function createFrontendQzHarness({f,identity,document=f.doc,present
         }
         close(){clearInterval(this.interval);sockets.delete(this);this.readyState=3;queueMicrotask(()=>this.onclose?.({}));}
     }
-    const api={async post(path,input) {
+    const callTypes=new Map();
+    const api={async post(path,input,config={}) {
+        if(integrated) {
+            if(closed || !['/qz/csrf','/qz/documento','/qz/prepare','/qz/assinar'].includes(path))throw error();
+            let body=input,call;
+            if(path==='/qz/prepare') {
+                call=JSON.parse(body.message).call;f.clock=new Date(Math.max(f.clock.getTime(),JSON.parse(body.message).timestamp));
+                body=await mutate?.(body,call) || body;state.prepareCalls++;
+            }
+            if(path==='/qz/csrf')state.csrfCalls++;
+            if(path==='/qz/assinar'){state.signCalls++;call=callTypes.get(body.intentId);}
+            const response=await f.secureRequest(path.slice(3),body,{headers:{...config.headers,...headers},signal:config.signal});
+            if(response.status>=400)throw error();
+            if(path==='/qz/prepare'){callTypes.set(response.data.intentId,call);await afterPrepare?.({call,intentId:response.data.intentId,body});}
+            if(path==='/qz/assinar')await afterSign?.({call,intentId:body.intentId});
+            return {data:path==='/qz/assinar'?(corruptSignature && call==='print'?'AA==':response.text):response.data};
+        }
         if(closed || path!=='/qz/assinar' || !/^[a-f0-9]{64}$/.test(input?.request))throw error();
         const message=preimages.get(input.request);if(!message)throw error();preimages.delete(input.request);
         const command=JSON.parse(message);f.clock=new Date(Math.max(f.clock.getTime(),command.timestamp));
@@ -66,6 +86,8 @@ export async function createFrontendQzHarness({f,identity,document=f.doc,present
             for(const socket of sockets){clearInterval(socket.interval);socket.readyState=3;socket.onopen=socket.onmessage=socket.onerror=socket.onclose=undefined;}sockets.clear();
             hooks?.deregister();delete globalThis[registry];preimages.clear();globalThis.console=oldConsole;
             if(oldCertificate===undefined)delete process.env.NEXT_PUBLIC_QZ_CERTIFICATE;else process.env.NEXT_PUBLIC_QZ_CERTIFICATE=oldCertificate;
+            if(previousMode===undefined)delete process.env.NEXT_PUBLIC_QZ_SIGNING_MODE;else process.env.NEXT_PUBLIC_QZ_SIGNING_MODE=previousMode;
+            if(previousStation===undefined)delete process.env.NEXT_PUBLIC_QZ_STATION_ID;else process.env.NEXT_PUBLIC_QZ_STATION_ID=previousStation;
         }
     };
     try {
@@ -74,6 +96,6 @@ export async function createFrontendQzHarness({f,identity,document=f.doc,present
         qz.api.setSha256Type(message=>{const digest=createHash('sha256').update(message).digest('hex');preimages.set(digest,message);return digest;});
         service=await import(serviceUrl);
         return {state,logs,library:qz,connect:()=>closed?Promise.reject(error()):service.conectarQZ(),
-            print:(html=document.html,printer=f.station.impressora)=>closed?Promise.reject(error()):service.imprimirCupom(html,printer),close};
+            print:(html=document.html,printer=f.station.impressora)=>closed?Promise.reject(error()):service.imprimirCupom(html,printer,{pedidoId:document.pedido_id}),close};
     }catch(failure){await close();throw failure;}
 }

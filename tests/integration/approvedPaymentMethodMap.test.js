@@ -168,10 +168,10 @@ describe('approved real payment identity map on synthetic PostgreSQL data', { co
                 metodo_entrega:'Retirada',metodo_pagamento_id:2,status:'Entregue',valor_total:20}).returning('*');
             const [item]=await historical.db('itens_pedido').insert({pedido_id:order.id,tamanho_marmita_id:size.id,quantidade:1,preco_unitario:20,subtotal:20}).returning('*');
             const applied = await historical.db.migrate.latest();
-            assert.equal(applied[1].length, 12);
-            assert.deepEqual(applied[1].slice(-8), [migrationName, '20261024000100_checkout_sessoes.js', '20261025000100_relatorios_financeiros.js',
+            assert.equal(applied[1].length, 13);
+            assert.deepEqual(applied[1].slice(-9), [migrationName, '20261024000100_checkout_sessoes.js', '20261025000100_relatorios_financeiros.js',
                 '20261025000200_infinitepay_ativacao_controlada.js','20261027000100_entregas_operacionais.js','20261027000200_infinitepay_identidade_ambiente.js',
-                '20261027000300_autorizacoes_producao.js','20261028000100_controles_administrativos.js']);
+                '20261027000300_autorizacoes_producao.js','20261028000100_controles_administrativos.js','20261028000200_qz_assinatura_protegida.js']);
             const rows = await historical.db('metodos_pagamento').orderBy('id');
             assert.deepEqual(rows.map(({ id, nome, codigo, tipo_financeiro }) => ({ id, nome, codigo, tipo_financeiro })), approved);
             assert.equal((await historical.db('config_infinitepay').first()).ativo, false);

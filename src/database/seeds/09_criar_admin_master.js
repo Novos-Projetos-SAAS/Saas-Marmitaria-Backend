@@ -5,7 +5,8 @@
  * - cria o usuário caso ainda não exista;
  * - atualiza/promove o usuário caso o e-mail já esteja cadastrado;
  * - reativa o usuário caso esteja inativo ou excluído logicamente;
- * - vincula todas as permissões existentes ao administrador;
+ * - vincula as permissões automáticas existentes ao administrador;
+ * - mantém impressao.assinar dependente de concessão explícita;
  * - pode ser executada várias vezes sem duplicar usuário ou permissões.
  *
  * @param { import("knex").Knex } knex
@@ -81,9 +82,10 @@ export async function seed(knex) {
             );
         }
 
-        // Busca o catálogo completo somente depois de todas as outras seeds terem rodado.
+        // Busca o catálogo automático somente depois de todas as outras seeds terem rodado.
         // Como esta é a seed 09, ela também inclui as permissões de relatórios da seed 07.
-        const permissoes = await trx('permissoes').select('id');
+        // Assinatura QZ exige concessão explícita, inclusive para administradores.
+        const permissoes = await trx('permissoes').whereNot('nome', 'impressao.assinar').select('id');
 
         if (permissoes.length === 0) {
             console.log(
@@ -96,7 +98,7 @@ export async function seed(knex) {
             return;
         }
 
-        // Monta um vínculo para cada permissão disponível no sistema.
+        // Monta um vínculo para cada permissão de concessão automática.
         const vinculos = permissoes.map((permissao) => ({
             usuario_id: adminId,
             permissao_id: permissao.id
@@ -112,7 +114,7 @@ export async function seed(knex) {
         console.log(
             logSymbols.success,
             chalk.green(
-                `Acesso total garantido para ${ADMIN.email}: ${permissoes.length} permissões verificadas.`
+                `Permissões automáticas vinculadas para ${ADMIN.email}: ${permissoes.length} permissões verificadas.`
             )
         );
     });
