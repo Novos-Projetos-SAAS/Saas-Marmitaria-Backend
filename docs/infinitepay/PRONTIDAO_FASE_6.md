@@ -2,13 +2,15 @@
 
 Atualização da sprint final: fluxo manual de estorno auditado, saúde/readiness, alertas de filas e ingresso Socket.IO protegidos. Os comandos e limites atuais estão na seção “Sprint final” ao final; os testes e commits desta atualização são registrados ali. Não houve alteração visual ou operacional QZ.
 
+**Decisão posterior do proprietário — escopo da primeira versão:** T24 está **ADIADO POR DECISÃO DO PROPRIETÁRIO**, sem aprovação artificial. A automatização/homologação financeira de estorno deixa de ser critério de conclusão desta versão. Permanecem o fluxo administrativo manual já implementado, o dever operacional de tratar reembolsos aplicáveis e a separação entre cancelamento do pedido, execução externa informada e estorno financeiramente comprovado. Nenhuma operação financeira de estorno não homologada foi habilitada. T23 físico continua pendente; não impede o ensaio de infraestrutura isolado. O NO-GO de exposição pública do assinador legado é um bloqueio de segurança distinto da disponibilidade da impressora.
+
 Referência: `CODEX_PACOTE_COMPLETO.md`, 1.430 linhas, SHA-256 `AE2B1EEA9D5424A08A9B2D36090C14FDF2A75BB1407DC1C43C0E4D6691FC9D08`. Fechamento funcional de 29/10/2026, exclusivamente nas branches `feature/infinitepay-checkout`.
 
 ## Resultado e limites
 
 **NO-GO comercial.** A candidata preserva os bloqueios de ativação. Não foram executados deploy, migrations reais, concessões de permissão, pagamentos, `/links`, `/payment_check`, impressão ou alterações em H1/H2/H3/H4/DEMO.
 
-A contagem usa as **18 RB** do PRD §4, sem somar repetições do TRD/UI/guia: **17 implementadas e verificáveis no ambiente sintético; RB-14 parcialmente implementada**, dependente do contrato externo de estorno. Das **6 HU**, 01–05 têm implementação funcional; HU-06 fica parcial pelo mesmo contrato. Isso não representa aceite de segurança ou homologação de infraestrutura comercial.
+A contagem usa as **18 RB** do PRD §4, sem somar repetições do TRD/UI/guia: **17 implementadas e verificáveis no ambiente sintético; RB-14 parcialmente implementada**. Das **6 HU**, 01–05 têm implementação funcional; o subcaso de estorno de HU-06 fica parcial. A confirmação financeira de estorno está adiada por decisão expressa do proprietário e não bloqueia por si a primeira versão; não é requisito aprovado ou silenciosamente removido da especificação original. Isso não representa aceite de segurança ou homologação de infraestrutura comercial.
 
 | Referência original | Situação funcional |
 |---|---|
@@ -17,7 +19,7 @@ A contagem usa as **18 RB** do PRD §4, sem somar repetições do TRD/UI/guia: *
 | RB-08–11 | Validade no dia de São Paulo; centavos/itens calculados no servidor; opções e cliente conforme especificação, sem descontos. |
 | RB-12; HU-05; UI §6/7; Plano Etapa 4 | Comprovante por pedido no acompanhamento titular, sucesso, listagem e detalhe administrativo; telefone não autoriza recibo. |
 | RB-13/15/16; App Flow §7 | Estados separados; mutações financeiras legadas bloqueadas; liberação persistente/outbox única/consumidor durável/lista e Socket existentes. |
-| RB-14; HU-06; T24 | Fluxo manual de solicitação/execução informada/conciliação e sinal refunded correlacionado implementados. Confirmação real independente ainda exige contrato; **incompleto externamente**. |
+| RB-14; HU-06; T24 | Fluxo manual de solicitação/execução informada/conciliação e sinal refunded correlacionado preservados. Confirmação real independente **adiada por decisão do proprietário**, sem habilitar estorno financeiro não homologado. |
 | RB-17/18 | Segredo só no servidor; controles permanecem desligados até aceite e autorização. |
 
 ## Correções deste fechamento
@@ -66,13 +68,13 @@ APROVADO significa integração **sintética** nesta candidata. Pix e Crédito r
 | T21 | APROVADO | GET telefone de pedido pago omite recibo/tokens/IDs; cookie de estranho recusado. |
 | T22 | APROVADO | Socket.IO real sintético, reconexão do navegador, reinício do consumidor e lista persistente. |
 | T23 | BLOQUEADO | Preservação lógica após erro simulada; falha/recuperação QZ operacional e impressão física não executadas por restrição. |
-| T24 | BLOQUEADO | Fluxo manual e conciliação comprovados sinteticamente; sinal refunded não confirma financeiro. Falta prova independente de estorno homologada no provedor. |
+| T24 | ADIADO POR DECISÃO DO PROPRIETÁRIO | Fora do aceite financeiro automatizado da primeira versão; fluxo manual preservado. Sinal refunded e cancelamento de pedido não confirmam estorno. |
 | T25 | APROVADO | Cancel/edit/delete com cobrança ativa recusados; conciliação administrativa não marca pago. |
 | T26 | APROVADO | POST público adulterado não escolhe fluxo/preço/estado financeiro; sem fallback de reserva para offline. |
 | T27 | APROVADO | JSON/limites/campos inesperados/canonicalização e logs sanitizados. |
 | T28 | APROVADO | Autorização atual do banco, CSRF/Origin, conciliação/grants sem bypass admin. |
 
-**26 APROVADOS SINTETICAMENTE, 2 BLOQUEADOS.** O componente físico de T23 não foi executado; T24 não tem prova externa de estorno homologada. Ambos estão incluídos nos bloqueios, sem aprovação parcial oculta.
+**26 APROVADOS SINTETICAMENTE, 1 BLOQUEADO (T23), 1 ADIADO (T24).** O componente físico de T23 não foi executado. T24 não foi aprovado nem homologado, mas foi retirado dos critérios de conclusão da primeira versão por decisão expressa do proprietário.
 
 ## Verificação final e rastreabilidade
 
@@ -162,7 +164,7 @@ Aplicação real do lote depende de autorização da janela depois do ensaio no 
 | Natureza | Bloqueio / ação concreta |
 |---|---|
 | Segurança, crítico | [Plano QZ/PEM existente](PLANO_SEGURANCA_QZ_PEM.md): exposição histórica, custódia/identidade e assinador operacional continuam sem aceite suficiente. Nenhum novo protótipo ou impressão neste fechamento. |
-| Contrato externo | Autenticidade/replay e entrega/retry completo de webhook; IDs suficientes sem browser; idempotência/recuperação após timeout de criação; prova independente de estorno/liquidação/repasse. Não foram inventadas garantias. |
+| Contrato externo | Autenticidade/replay e entrega/retry completo de webhook; IDs suficientes sem browser; idempotência/recuperação após timeout de criação; prova independente de liquidação/repasse. Estorno financeiro automatizado/T24 foi adiado para versão futura e não impede o ensaio/implantação desligada. Não foram inventadas garantias. |
 | Operação/infraestrutura | HTTPS/proxy definitivo, firewall, supervisor/alertas, custódia, backup/restauração real/RPO/RTO e política de continuidade das aprovações ainda exigem execução/aceite. |
 | Proprietário | Autorizar inventário/lote real de migrations e grants, implantação, habilitação comercial e ensaio operacional final. Nenhuma dessas autorizações decorre dos testes. |
 
@@ -193,7 +195,7 @@ Todas exigem usuário/nível ativos e a permissão **expressa `pagamentos.estorn
 
 O UUID de cada comando permanece o mesmo após perda de resposta. Reutilização por outro ator/ação/conteúdo é recusada; locks serializam solicitações e impedem duas intenções para a mesma tentativa. Uma segunda execução externa não substitui a anterior. Valor exibido é referência original, nunca valor efetivamente devolvido/taxa/líquido inventados. Solicitação, execução informada e conciliação só acrescentam auditoria; não atualizam pagamento, pedido, itens, produção, relatórios ou outbox.
 
-O parser recebe `refunded` **como sinal não verificado**, somente com order_nsu/transação/fatura válidos no envelope estrito, rejeitando identificadores vazios/ambíguos. O motor mantém a exigência de prova independente de ESTORNADA; `paid=true` sozinho não a fornece. O parser real de payment_check continua sem fabricar financialState. Assim T24 contratual permanece BLOQUEADO, embora o fluxo manual local esteja implementado/testado. A confirmação oficial necessária é como obter evidência independente de estorno, com estado, correlação, valor, autenticação e idempotência/replay — não um endpoint automático presumido de solicitação.
+O parser recebe `refunded` **como sinal não verificado**, somente com order_nsu/transação/fatura válidos no envelope estrito, rejeitando identificadores vazios/ambíguos. O motor mantém a exigência de prova independente de ESTORNADA; `paid=true` sozinho não a fornece. O parser real de payment_check continua sem fabricar financialState. T24 está **ADIADO POR DECISÃO DO PROPRIETÁRIO**, embora o fluxo manual local esteja implementado/testado. Para uma versão futura, a confirmação oficial necessária será como obter evidência independente de estorno, com estado, correlação, valor, autenticação e idempotência/replay — não um endpoint automático presumido de solicitação.
 
 ### Saúde, alertas e continuidade
 
@@ -312,4 +314,81 @@ node scripts/qz-public-identity.mjs --environment
 
 Se a identidade ativa coincidir com a histórica exposta, planejar substituição/revogação da chave e certificado e proteção do endpoint sob autorização própria, com teste da impressão existente. Ausência dessa conferência não prova que a identidade seja diferente/segura. Nenhum desses comandos de identidade, impressão física ou mudanças QZ foi executado nesta sprint.
 
-Parecer: desenvolvimento local deste fluxo administrativo/saúde/alertas concluído conforme os testes finais registrados; T23 físico e T24 contratual permanecem bloqueados. Segurança QZ, prova externa de estorno, ingresso definitivo, permissões explícitas, backup/restore real e política de supervisão exigem ações/autorizações do proprietário ou do fornecedor. **NO-GO comercial** até esse aceite; não há ativação automática ou nova fase genérica a executar.
+Parecer atualizado: desenvolvimento local deste fluxo administrativo/saúde/alertas concluído conforme os testes finais registrados; T23 físico permanece pendente e T24 foi adiado pelo proprietário para uma versão futura. Segurança QZ, ingresso definitivo, permissões explícitas, backup/restore do ambiente definitivo e política de supervisão exigem ações/autorizações próprias. **NO-GO comercial** até o aceite aplicável; o adiamento de T24 não autoriza contornar nenhum desses controles. Não há ativação automática ou nova fase genérica a executar.
+
+## Pré-implantação — ensaio executado e decisão de publicação
+
+Execução local em 29/10/2026, sobre BE `3a1cf01b6f6872629b7a79b1c2f375c7f7bf931a` e FE `a4ea2391e7af8351e3294879354556fc50e78722`. Somente este relatório foi alterado; código, lockfiles, migrations, QZ/PEM, H1/H4/DEMO, aparência e main permanecem intactos. Nenhum push, merge, deploy ou acesso ao ambiente definitivo ocorreu.
+
+| Verificação desta execução | Resultado e limite |
+|---|---|
+| Runtime/lockfile | Node 24.18.0, npm 11.16.0, Next 16.3.0 (engine >=20.9.0), React 19.2.4, Knex 3.2.9, pg 8.20.0 e PostgreSQL 18.4. Next requer serviço Node: o BFF e as rotas dinâmicas impedem tratar esta aplicação como site estático. Sem reinstalar dependências ou repetir build/lint/regressão concluídos. |
+| Migrations em banco vazio | 39 aplicadas no PostgreSQL descartável; configuração ativa=false, worker parado, nenhuma aprovação operacional. |
+| Upgrade histórico sintético | 26 migrations da main → 39 da candidata; as 26 são idênticas à main local e as 13 são adicionais. Cinco pedidos/cinco itens, IDs, valores, métodos históricos e método personalizado preservados. Históricos continuam POSTERIOR, sem liberação nem tentativa financeira inventada. Segunda migrate.latest aplica zero. |
+| Diferença de estrutura | 22 tabelas adicionais; codigo/tipo_financeiro em metodos_pagamento e quatro campos em pedidos (fluxo_pagamento, liberado_cozinha_em, client_request_id, client_payload_hash); view vw_rel_pedidos_financeiros e cinco funções de relatórios substituídas. Nenhuma tabela ou coluna anterior removida no ensaio. Isso compara a main local, não presume o ledger/estrutura da produção. |
+| Permissões/grants | O admin sintético preexistente recebeu apenas os três grants históricos previstos (configurar/visualizar/conciliar). Ativação e assinatura não receberam grants automáticos; pagamentos.estornar nem foi criada. O efeito histórico exige aceite expresso antes do lote real. |
+| Backup/restauração | Teste existente `backup restores audit...` aprovado (1/1, 42,8s): pg_dump custom/pg_restore para outra instância vazia, checksum, igualdade dos registros de 15 tabelas (ledger, pedidos/itens, financeiro, auditoria, outbox, revogações e entrega), restart abrupto do destino e recuperação do mesmo recibo sem segunda entrega. Dump do schema sintético; não certifica papéis/ACLs globais, backup/WAL ou custódia do ambiente definitivo. |
+| Perfil production desligado | Health/readiness HTTP200, checkout=false, worker=false e zero chamadas financeiras reais. Seis verificações assertivas de infraestrutura concluídas no roteiro descartável fora do Git. Não equivale a validar ingress/credenciais reais da Render. |
+| Assinador anônimo | Reproduzido com referência inerte injetada (sem chamar o assinador verdadeiro): POST /qz/assinar, peer/headers do proxy válidos, sem cookie/sessão, alcança legacy/default e retorna 200. Sem headers válidos retorna403. secure-test sem runtime retorna503. Assim proxy/flags financeiras não autenticam a rota legada. |
+
+Os clusters criados por essas execuções foram parados e removidos pelo mecanismo de propriedade/cleanup existente. A primeira comparação do roteiro adicional recusou as novas colunas esperadas no método personalizado; foi corrigida para comparar os campos antigos e exigir codigo=null/tipo_financeiro=OUTRO. O fetch do Node também substituía o Host sintético; um probe loopback comprovou isso e o roteiro passou a usar node:http, como os testes existentes de proxy. As execuções incompletas não foram contadas como aprovadas. Nenhum desses ajustes alterou o código da candidata. Logs, JSONs, dump e roteiro descartável não são versionados.
+
+### Configuração final conferida no código
+
+A [Render permite fixar NODE_VERSION](https://render.com/docs/language-support) e [oferece PostgreSQL 18](https://render.com/docs/postgresql-upgrading). Fixar `NODE_VERSION=24.18.0` para reproduzir o runtime ensaiado; não depender da versão padrão da plataforma. O número minor do PostgreSQL gerenciado e o runtime efetivo precisam ser conferidos no alvo autorizado.
+
+- Backend: `NODE_ENV=production`, `INFINITEPAY_MODE=production`, `INFINITEPAY_BIND_HOST=0.0.0.0`, `PORT`; `DATABASE_URL` sem query/hash ou DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME; INFINITEPAY_DATABASE_NAME e UUID estável INFINITEPAY_DATABASE_ID. TLS remoto exige validação de certificado; DB_SSL_CA quando necessário. Identidade do banco deve estar vinculada a PRODUCAO por operação própria autorizada, nunca por seed automático.
+- Segredos: JWT_SECRET forte e INFINITEPAY_ENCRYPTION_KEY, ou keyring/versionamento existentes. São chaves distintas; preservar as versões necessárias para decrypt de credenciais históricas e guardar backup separado do banco. API Key só na configuração administrativa cifrada; nunca NEXT_PUBLIC, logs ou linha de comando.
+- Rede: INFINITEPAY_PUBLIC_ORIGIN (API), INFINITEPAY_SUCCESS_URL (Frontend/pedido/sucesso), INFINITEPAY_ALLOWED_PUBLIC_ORIGINS, ALLOWED_ORIGINS e INFINITEPAY_TRUSTED_PROXY_IPS exatos. Confirmar peer e sobrescrita de Host/Proto/XFF único da Render. Não usar IP inventado, trust proxy=true, cadeia não validada ou homologation/test no alvo real.
+- Frontend: CHECKOUT_SITE_ORIGIN, CHECKOUT_BACKEND_URL, NEXT_PUBLIC_API_URL e NEXT_PUBLIC_SITE_URL definidos no build/runtime aplicável; BFF no mesmo site do comprador. API pública deve corresponder ao Host permitido pelo Backend. DEMO ausente. Conferir cookies admin HttpOnly/Secure/None e cookies BFF __Host-*/HttpOnly/Secure/Lax/Path=/, sem Domain, nos navegadores finais. CSRF BFF X-Checkout-CSRF e controles X-Infinitepay-CSRF permanecem distintos.
+- Inicialização: ativo=false e flags CHECKOUT/WORKER/VERIFY/DELIVERY=false. Sem aprovação, sem worker automático. Health `/health/ready` verifica banco/identidade/39 migrations e não autoriza finanças. Runtime production precisa das tabelas antes do boot: aplicar o lote aprovado antes do start da candidata, não no build/start.
+- Worker/kill switch: capacidades explícitas, por boot/credencial/destino, TTL padrão300s/máximo900s, sem renovação automática. Nova aprovação da MESMA credencial revoga a anterior: enviar o conjunto completo de capacidades autorizado, não quatro grants sucessivos. `ativo=false` bloqueia novas criações; emergency-stop revoga capacidades e preserva evidências; não cancela uma chamada já em trânsito. Reinício exige nova aprovação. Nenhum worker foi habilitado no alvo real.
+
+Os nomes/contratos foram conferidos, não valores reais de ambiente. Render, domínios, CA, credenciais, identidade, permissões e ledger definitivos continuam não inspecionados por falta de acesso/autorização. O papel do PostgreSQL definitivo deve possuir as permissões DDL exigidas pelo lote e o runtime deve conseguir ler/gravar as tabelas necessárias; o ensaio com papel sintético não atesta os grants do provedor.
+
+### Ordem final e classificação dos comandos
+
+1. **Leitura local:** conferir SHAs, branch e árvore limpa nos dois caminhos. **Mudança na Render/hosting, exige autorização:** desativar auto-deploy antes de qualquer publicação, para que um push não provoque deploy indireto.
+2. **Mudança no GitHub, exige autorização de push:** após conferir que o remoto é ancestral do HEAD aprovado, publicar somente feature/infinitepay-checkout, sem force. Divergência interrompe; não fazer merge/rebase automático. Merge continua autorização independente.
+3. **Leitura no alvo, exige acesso autorizado:** conferir banco/versão/ledger/identidade, mapeamento, permissões e topologia. O que falta aplicar em produção é desconhecido. Os comandos de backup/restore e migrate:list/latest da seção Banco são futuros; não foram usados contra bancos existentes nesta execução.
+4. **Backup lê a origem e grava arquivo privado; restore altera somente clone vazio conferido.** Validar restauração/roles/chaves/retencão/RPO/RTO. Depois do aceite do lote, **migrate:latest altera o banco definitivo** e exige autorização própria. Nunca seeds gerais/down, nem restore antigo sobre evidências novas.
+5. **Deploy altera aplicação pública:** Backend build `npm ci --omit=dev`, start `npm start`, depois Frontend build `npm ci && npm run build`, start `npm start -- --hostname 0.0.0.0 --port $PORT`. Flags/configuração continuam falsas. Auto-deploy não é autorização implícita.
+6. **Leitura HTTP:** os GET /health/live e /health/ready e o diagnóstico autenticado do roteiro acima. Aceite no domínio final inclui cookies/login/logout, CORS/CSRF e Socket; não inserir eventos/pedidos falsos no banco real. Callbacks simulados somente no ambiente isolado.
+7. **Alteração operacional, exige autorização comercial separada:** flags, capacidades, worker e ativo=true. Não executar enquanto os gates aplicáveis estiverem pendentes; não desligar impressão existente para burlar assertReady. Parada e rollback preservam ledger/chaves/webhook, sem excluir reservas.
+
+Para os comandos locais/Git futuros, os caminhos são:
+
+```powershell
+$be = 'C:\Users\Passare Store 02\Documents\Codex\2026-10-22\files-mentioned-by-the-user-00\work\Saas-Marmitaria-Backend'
+$fe = 'C:\Users\Passare Store 02\Documents\Codex\2026-10-22\files-mentioned-by-the-user-00\work\Saas-Marmitaria-Frontend'
+foreach ($repo in @($be,$fe)) {
+    git -C $repo branch --show-current
+    git -C $repo rev-parse HEAD
+    git -C $repo status --short
+}
+# SOMENTE APÓS autorização de push e auto-deploy comprovadamente desligado:
+foreach ($repo in @($be,$fe)) {
+    if ((git -C $repo branch --show-current) -ne 'feature/infinitepay-checkout') { throw 'Branch incorreta' }
+    if (@(git -C $repo status --porcelain).Count) { throw 'Árvore não está limpa' }
+    git -C $repo fetch origin feature/infinitepay-checkout
+    if ($LASTEXITCODE -ne 0) { throw 'Fetch falhou' }
+    git -C $repo merge-base --is-ancestor origin/feature/infinitepay-checkout HEAD
+    if ($LASTEXITCODE -ne 0) { throw 'Divergência: não publicar, não integrar automaticamente' }
+    git -C $repo push origin HEAD:refs/heads/feature/infinitepay-checkout
+    if ($LASTEXITCODE -ne 0) { throw 'Publicação falhou' }
+}
+```
+
+Esse bloco não executa merge ou deploy; requer que HEAD tenha sido comparado aos SHAs explicitamente aprovados pelo proprietário. Se a branch remota não existir, o comando interrompe para validação do destino em vez de presumir autorização.
+
+### Reembolso manual durante o adiamento de T24
+
+O proprietário identifica pedido, pagamento original e direito/valor aplicável; operador com permissão expressa registra a solicitação no fluxo existente. Conferir a mesma conta/transação no App oficial InfinitePay, executar externamente somente sob autorização do caso e guardar protocolo/evidência em armazenamento restrito. Registrar execução externa informada pelo horário e hash (comandos já existentes acima). Se o App não permitir, obter orientação/protocolo pelo suporte oficial, sem inventar endpoint ou marcar sucesso.
+
+Sem contrato/prova independente homologada, a conciliação permanece AGUARDANDO_PROVA_INDEPENDENTE; não marcar ESTORNADA por SQL, não cancelar pedido como prova de devolução, não reduzir automaticamente receitas/taxas. O controle externo desses reembolsos deve integrar o fechamento financeiro manual do proprietário, pois o painel não comprova automaticamente a devolução. Preservar pedido, produção, tentativa, eventos e recibos. O adiamento não suspende o tratamento de reembolsos aplicáveis e não altera permissões sozinho.
+
+### Decisão atual
+
+**Ensaios locais de migrations e backup/restauração: APROVADOS. Preparação local: CONCLUÍDA. Exposição pública da candidata padrão: NO-GO**, mesmo com checkout desligado, por `/qz/assinar` legado sem autenticação da operação. Essa restrição não depende de ter a impressora presente. Não se resolveu usando flag secure-test/inválida em produção ou alterando o módulo QZ.
+
+Para autorizar deploy público, o proprietário deve aprovar uma solução operacional específica para impedir assinatura anônima sem interromper a impressão existente (integração protegida ou perímetro comprovado compatível); o ambiente Render deve comprovar proxy/HTTPS/cookies e o banco definitivo deve comprovar identidade/lote/backup/grants. Não foi criada funcionalidade nova, nem se exige outra auditoria genérica. T23 aguarda a outra estação/impressora; T24 está adiado e não é bloqueador da primeira versão. Publicação da branch, merge, deploy e ativação comercial seguem autorizações distintas, ainda não concedidas nesta tarefa.
