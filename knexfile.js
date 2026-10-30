@@ -1,26 +1,26 @@
 import 'dotenv/config'
 import { isolatedTestConnection } from './src/config/isolatedTestDatabase.js';
+import {resolveFinancialEnvironment} from './src/config/resolveFinancialEnvironment.js';
+import {financialPostgresConnection} from './src/config/postgresConnection.js';
 
-/**
- * @type { Object.<string, import("knex").Knex.Config> }
- */
-
-const financialProduction=process.env.NODE_ENV === 'production' && process.env.INFINITEPAY_MODE === 'production';
-const databaseHost=process.env.DATABASE_URL ? new URL(process.env.DATABASE_URL).hostname : process.env.DB_HOST;
-const financialTls=financialProduction && !['127.0.0.1','localhost','::1','[::1]'].includes(databaseHost)
-  ? {rejectUnauthorized:true,...(process.env.DB_SSL_CA ? {ca:process.env.DB_SSL_CA} : {})} : false;
-const connection = process.env.DATABASE_URL
-  ? {
-      connectionString: process.env.DATABASE_URL,
-      ssl: financialProduction ? financialTls : { rejectUnauthorized: false } // Legacy profile; financial production verifies TLS.
-    }
+/** @type { Object.<string, import("knex").Knex.Config> } */
+const env = resolveFinancialEnvironment(process.env);
+Object.assign(process.env, env);
+const financialProduction = env.NODE_ENV === 'production' && env.INFINITEPAY_MODE === 'production';
+const databaseHost = env.DB_HOST;
+const remoteDatabase = host => !['127.0.0.1','localhost','::1','[::1]'].includes(host);
+const verifiedTls = {rejectUnauthorized: true, ...(env.DB_SSL_CA ? {ca:env.DB_SSL_CA} : {})};
+const connection = env.DATABASE_URL
+  ? financialProduction
+    ? financialPostgresConnection(env.DATABASE_URL, {ca:env.DB_SSL_CA})
+    : {connectionString: env.DATABASE_URL, ssl: {rejectUnauthorized: false}}
   : {
-      host: process.env.DB_HOST,
-      port: Number(process.env.DB_PORT),
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-      database: process.env.DB_NAME,
-      ...(financialProduction ? {ssl:financialTls} : {})
+      host: databaseHost,
+      port: Number(env.DB_PORT || 5432),
+      user: env.DB_USER,
+      password: env.DB_PASSWORD,
+      database: env.DB_NAME,
+      ...(financialProduction ? {ssl: remoteDatabase(databaseHost) ? verifiedTls : false} : {})
     };
 
 export default {
