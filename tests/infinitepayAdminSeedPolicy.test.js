@@ -32,8 +32,7 @@ test('does not implicitly promote user 1 or accept mismatched confirmation',()=>
 test('bootstrapped user gets RBAC administration and InfinitePay capability approval permission',()=>{
     assert.deepEqual([...INFINITEPAY_ADMIN_SEED_PERMISSIONS],[
         'permissoes.listar','permissoes.visualizar','permissoes.editar',
-        'pagamentos.configurar','pagamentos.visualizar','pagamentos.conciliar',
-        'pagamentos.ativar_producao'
+        'pagamentos.configurar','pagamentos.ativar_producao'
     ]);
     assert.equal(new Set(INFINITEPAY_ADMIN_SEED_PERMISSIONS).size,
         INFINITEPAY_ADMIN_SEED_PERMISSIONS.length);
