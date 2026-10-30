@@ -6,6 +6,11 @@ import chalk from 'chalk';
 import logSymbols from 'log-symbols';
 
 export async function seed(knex) {
+
+    // Apaga o catálogo/vínculos RBAC. Nunca reexecutar em produção.
+    if(process.env.NODE_ENV==='production' || process.env.INFINITEPAY_MODE==='production') {
+        throw new Error('Seed de reset RBAC bloqueada em produção. Use a seed 14 específica da InfinitePay.');
+    }
     await knex('permissoes_usuarios').del();
     await knex('permissoes').del();
 
