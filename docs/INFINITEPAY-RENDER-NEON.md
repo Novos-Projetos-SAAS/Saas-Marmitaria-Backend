@@ -113,6 +113,7 @@ Para executar o diagnóstico de configuração sem imprimir segredos:
 
 ```powershell
 npm run diagnose:infinitepay:local
+npm run diagnose:infinitepay:boot
 npm run start
 ```
 
@@ -150,3 +151,36 @@ valida inicialização, migrações e conectividade. Alterar para `true`
 ainda exige autorizações administrativas explícitas, que expiram em até
 15 minutos, e pode movimentar dinheiro real. Não existe sandbox público
 para usar uma API Key de produção da InfinitePay sem transações reais.
+
+### Inicialização falhou apesar de PostgreSQL conectado
+
+A mensagem `PostgreSQL conectado com Knex!` comprova apenas que o servidor
+conseguiu executar `SELECT 1`. Não comprova identidade financeira, migrations,
+schema, prontidão do worker ou proxy HTTPS. O servidor agora registra somente
+a etapa e uma categoria de erro autorizada (sem mensagens de exceção que
+possam conter credenciais).
+
+Execute:
+
+```powershell
+git switch feature/infinitepay-checkout
+git pull --ff-only
+npm run diagnose:infinitepay:boot
+```
+
+O preflight acessa a Neon em modo **somente leitura** e identifica requisitos
+de produção ausentes. Códigos comuns:
+
+- `DB_IDENTITY_TABLE`: migration/provisionamento da identidade ausente;
+- `DB_IDENTITY_ROW`: registro `id=1` inexistente;
+- `DB_IDENTITY_PRODUCTION`: marcador não indica `PRODUCAO`;
+- `DB_IDENTITY_MATCH`: UUID do .env diverge do UUID persistido no banco;
+- `DB_TABLE_INFINITEPAY_ENTREGAS_OPERACIONAIS`, `DB_TABLE_INFINITEPAY_ENTREGAS_TENTATIVAS`:
+  migrations/tabelas financeiras pendentes;
+- `DB_MIGRATIONS_CURRENT`: há migrations no repositório não aplicadas;
+- `DB_PRODUCTION_ASSERT`: o verificador financeiro ainda rejeita o banco.
+
+Não insira registros de identidade aleatórios nem execute seeds de produção
+para passar a validação. Resolva a causa específica antes de ligar o
+checkout real. O diagnóstico **não imprime** valores de conexão/segredos
+e não altera registros.
