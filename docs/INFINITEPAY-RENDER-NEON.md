@@ -275,12 +275,11 @@ específica**.
    WHERE u.id = 1
      AND p.nome IN (
        'permissoes.listar', 'permissoes.visualizar', 'permissoes.editar',
-       'pagamentos.configurar', 'pagamentos.visualizar',
-       'pagamentos.conciliar', 'pagamentos.ativar_producao'
+       'pagamentos.configurar', 'pagamentos.ativar_producao'
      )
    ORDER BY p.nome;
    ```
-   Resultado esperado: as sete permissões acima com `nivel_acesso=admin`.
+   Resultado esperado: as cinco permissões acima com `nivel_acesso=admin`.
 4. Faça logout e login novamente para atualizar o cargo contido no token.
    As permissões podem ser administradas em
    `/admin/usuarios/1/permissoes`. A concessão de permissões **não liga**
