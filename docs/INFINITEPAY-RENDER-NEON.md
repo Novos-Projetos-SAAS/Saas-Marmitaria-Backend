@@ -184,3 +184,50 @@ Não insira registros de identidade aleatórios nem execute seeds de produção
 para passar a validação. Resolva a causa específica antes de ligar o
 checkout real. O diagnóstico **não imprime** valores de conexão/segredos
 e não altera registros.
+
+## A identidade do banco está em NAO_CONFIGURADO
+
+A migration `20261027000200_infinitepay_identidade_ambiente.js` cria o registro
+`id=1` com o UUID imutável gerado pelo PostgreSQL e com
+`ambiente='NAO_CONFIGURADO'`. A migração **não promove** o banco automaticamente
+para produção. Se o preflight retorna `DB_IDENTITY_PRODUCTION` com falha e
+`DB_IDENTITY_MATCH` com sucesso, a causa é a classificação do ambiente,
+não a conexão nem o UUID.
+
+Antes de qualquer mudança: confirme que está conectado ao banco/branch Neon
+pretendido, que seu uso para **pagamentos reais** foi deliberadamente
+autorizado, que há backup e que nenhum worker financeiro não testado
+compartilha o banco. Nunca promova um banco de homologação ou a base de
+clientes reais somente para eliminar uma mensagem de erro no Windows.
+
+Consulta segura no SQL Editor da Neon:
+
+```sql
+SELECT current_database() AS banco, current_schema() AS schema;
+SELECT id, ambiente, identidade
+FROM infinitepay_identidade_ambiente
+WHERE id = 1;
+```
+
+**Somente para uma implantação explicitamente destinada a produção**, com
+resultado `ambiente='NAO_CONFIGURADO'`, uma classificação manual controlada
+pode ser feita por operador autorizado:
+
+```sql
+BEGIN;
+UPDATE infinitepay_identidade_ambiente
+SET ambiente = 'PRODUCAO'
+WHERE id = 1
+  AND ambiente = 'NAO_CONFIGURADO'
+RETURNING id, ambiente;
+COMMIT;
+```
+
+Esperado: **uma linha** atualizada. Se retornar zero linhas, **não force**
+um UPDATE de `HOMOLOGACAO` para `PRODUCAO` sem investigar a finalidade
+do banco e a existência de transações anteriores. `COMMIT` apenas
+persiste a classificação; não ativa pagamentos. Mantenha
+`INFINITEPAY_ENABLED=false` até os demais requisitos estarem validados.
+
+Reexecute `npm run diagnose:infinitepay:boot` e `npm start`. O modo local
+com túnel HTTPS não altera o requisito de `ambiente='PRODUCAO'`.
