@@ -36,8 +36,19 @@ export function validateProductionEnvironment(input) {
         const renderIngress=env.RENDER==='true' && env.RENDER_SERVICE_TYPE==='web' &&
             renderUrl?.protocol==='https:' && renderUrl.hostname.endsWith('.onrender.com') &&
             renderUrl.origin===env.RENDER_EXTERNAL_URL && bindHost==='0.0.0.0';
-        if((!renderIngress && !proxies.length) || proxies.some(v=>!isIP(v) || ['0.0.0.0','::'].includes(v)))fail();
-        const proxyMode=renderIngress && !proxies.length ? 'render' : 'allowlist';
+        // Explicit developer opt-in for production-equivalent tests on Windows:
+        // HTTPS is terminated by a local tunnel (cloudflared/ngrok), whose
+        // local HTTP connection must originate from the loopback interface.
+        // Never enable this mode on Render or bind the service to a LAN interface.
+        const localTunnel=env.INFINITEPAY_LOCAL_TEST==='true' && env.RENDER!=='true' &&
+            bindHost==='127.0.0.1' && !renderUrl &&
+            !new URL(publicOrigin).hostname.endsWith('.onrender.com') &&
+            !proxies.length;
+        if((!renderIngress && !localTunnel && !proxies.length) ||
+            (env.INFINITEPAY_LOCAL_TEST!==undefined && !['true','false',''].includes(env.INFINITEPAY_LOCAL_TEST)) ||
+            (env.INFINITEPAY_LOCAL_TEST==='true' && !localTunnel) ||
+            proxies.some(v=>!isIP(v) || ['0.0.0.0','::'].includes(v)))fail();
+        const proxyMode=localTunnel ? 'local-tunnel' : renderIngress && !proxies.length ? 'render' : 'allowlist';
         let database=env.DB_NAME, host=env.DB_HOST, port=Number(env.DB_PORT || 5432);
         if(env.DATABASE_URL) {
             const parsed = parsePostgresUrl(env.DATABASE_URL, {financialProduction:true});
@@ -69,9 +80,11 @@ export async function assertProductionDatabase(db,config) {
 }
 export function configureProductionProxy(app,config) {
     if(config.proxyMode==='render') {
-        // Render owns the HTTP ingress; trust only the immediately adjacent
-        // Render hop, never arbitrary client-supplied X-Forwarded-For entries.
+        // The managed Render ingress terminates HTTPS upstream.
         app.set('trust proxy',1);
+    } else if(config.proxyMode==='local-tunnel') {
+        // Trust only the tunnel process on the same developer machine.
+        app.set('trust proxy',(address,hop)=>hop===0 && local(ip(address)));
     } else {
         const trusted=new Set(config.proxies.map(ip));
         app.set('trust proxy',(address,hop)=>hop===0 && trusted.has(ip(address)));
@@ -94,7 +107,9 @@ export function productionRequestAllowed(req,config) {
     const remote=ip(req.socket?.remoteAddress);
     const trustedIngress=config.proxyMode==='render'
         ? isIP(remote)!==0
-        : config.proxies.map(ip).includes(remote);
+        : config.proxyMode==='local-tunnel'
+            ? local(remote)
+            : config.proxies.map(ip).includes(remote);
     return trustedIngress && validChain && h.host===new URL(config.publicOrigin).host &&
         h['x-forwarded-proto']==='https' && !h.forwarded &&
         (!h['x-forwarded-host'] || h['x-forwarded-host']===h.host);
