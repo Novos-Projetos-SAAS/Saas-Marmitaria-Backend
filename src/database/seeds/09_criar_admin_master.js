@@ -18,6 +18,12 @@ import logSymbols from 'log-symbols';
 import { hashPassword } from '../../utils/passwordUtils.js';
 
 export async function seed(knex) {
+
+    // Seed legado de desenvolvimento redefine senha e reativa contas.
+    // Nunca permitir execução acidental em banco destinado a produção.
+    if(process.env.NODE_ENV==='production' || process.env.INFINITEPAY_MODE==='production') {
+        throw new Error('Bootstrap legado de senha administrativa bloqueado em produção. Use a seed 14 específica.');
+    }
     // Dados do administrador inicial do ambiente de desenvolvimento.
     const ADMIN = {
         nome: 'Nei',
@@ -84,8 +90,9 @@ export async function seed(knex) {
 
         // Busca o catálogo automático somente depois de todas as outras seeds terem rodado.
         // Como esta é a seed 09, ela também inclui as permissões de relatórios da seed 07.
-        // Assinatura QZ exige concessão explícita, inclusive para administradores.
-        const permissoes = await trx('permissoes').whereNot('nome', 'impressao.assinar').select('id');
+        // Produção InfinitePay e QZ exigem autorização explícita e individual.
+        const permissoes = await trx('permissoes')
+            .whereNotIn('nome', ['impressao.assinar', 'pagamentos.ativar_producao']).select('id');
 
         if (permissoes.length === 0) {
             console.log(
