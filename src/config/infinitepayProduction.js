@@ -1,4 +1,6 @@
 import { isIP } from 'node:net';
+import {parsePostgresUrl} from './postgresConnection.js';
+import {resolveFinancialEnvironment} from './resolveFinancialEnvironment.js';
 
 export const productionBlocked = () => Object.assign(new Error('Produção InfinitePay indisponível: configuração ou autorização incompleta.'),
     {code:'INFINITEPAY_PRODUCTION_BLOCKED',statusCode:503});
@@ -10,8 +12,9 @@ function httpsOrigin(value) {
     if(url.protocol!=='https:' || url.origin!==value || url.username || url.password) fail();
     return url;
 }
-export function validateProductionEnvironment(env) {
+export function validateProductionEnvironment(input) {
     try {
+        const env = resolveFinancialEnvironment(input);
         if(env.NODE_ENV!=='production' || env.INFINITEPAY_MODE!=='production' || env.INFINITEPAY_DEMO ||
             !/^[a-z][a-z0-9_]{0,62}$/.test(env.INFINITEPAY_DATABASE_NAME || '') ||
             /(?:_homologacao|_demo)$/.test(env.INFINITEPAY_DATABASE_NAME) ||
@@ -29,9 +32,8 @@ export function validateProductionEnvironment(env) {
         if(!proxies.length || proxies.some(v=>!isIP(v) || ['0.0.0.0','::'].includes(v))) fail();
         let database=env.DB_NAME, host=env.DB_HOST, port=Number(env.DB_PORT || 5432);
         if(env.DATABASE_URL) {
-            const url=new URL(env.DATABASE_URL);
-            if(!['postgres:','postgresql:'].includes(url.protocol) || url.search || url.hash) fail();
-            database=url.pathname.slice(1);host=url.hostname;port=Number(url.port || 5432);
+            const parsed = parsePostgresUrl(env.DATABASE_URL, {financialProduction:true});
+            database=parsed.database;host=parsed.host;port=parsed.port;
         }
         if(database!==env.INFINITEPAY_DATABASE_NAME || !host || host!==host.trim() || !Number.isInteger(port) || port<1 || port>65535) fail();
         for(const key of ['INFINITEPAY_CHECKOUT_ENABLED','INFINITEPAY_WORKER_ENABLED','INFINITEPAY_VERIFY_ENABLED','INFINITEPAY_DELIVERY_ENABLED'])
@@ -46,9 +48,8 @@ export async function assertProductionDatabase(db,config) {
         if(db.client.config.searchPath?.includes('infinitepay_demo'))fail();
         let {host,database,port=5432}=connection || {};
         if(connection?.connectionString) {
-            const url=new URL(connection.connectionString);
-            if(!['postgres:','postgresql:'].includes(url.protocol) || url.search || url.hash) fail();
-            host=url.hostname;database=url.pathname.slice(1);port=Number(url.port || 5432);
+            const parsed = parsePostgresUrl(connection.connectionString, {financialProduction:true});
+            host=parsed.host;database=parsed.database;port=parsed.port;
         }
         if(host!==config.host || database!==config.database || Number(port)!==config.port ||
             (!local(host) && (!connection.ssl || connection.ssl===true || connection.ssl.rejectUnauthorized!==true))) fail();
