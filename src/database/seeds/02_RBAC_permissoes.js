@@ -5,17 +5,8 @@
 import chalk from 'chalk';
 import logSymbols from 'log-symbols';
 
-export async function seed(knex) {
-
-    // Apaga o catálogo/vínculos RBAC. Nunca reexecutar em produção.
-    if(process.env.NODE_ENV==='production' || process.env.INFINITEPAY_MODE==='production') {
-        throw new Error('Seed de reset RBAC bloqueada em produção. Use a seed 14 específica da InfinitePay.');
-    }
-    await knex('permissoes_usuarios').del();
-    await knex('permissoes').del();
-
-    // 2. Definição das permissões por módulo
-    const listaPermissoes = [
+// Catálogo legado reutilizado pelo bootstrap seguro, sem executar o reset.
+export const BASE_RBAC_PERMISSIONS = [
         // Módulo: Usuários
         { nome: 'usuarios.listar', descricao: 'Visualizar lista de funcionários' },
         { nome: 'usuarios.criar', descricao: 'Cadastrar novos funcionários' },
@@ -80,7 +71,20 @@ export async function seed(knex) {
         { nome: 'niveis_acesso.deletar', descricao: 'Remover níveis de acesso do sistema' },
         { nome: 'niveis_acesso.restaurar', descricao: 'Restaurar níveis de acesso excluídos' }
 
-    ];
+];
+
+export async function seed(knex) {
+
+    // Apaga o catálogo/vínculos RBAC. Nunca reexecutar em produção.
+    if(process.env.NODE_ENV==='production' || process.env.INFINITEPAY_MODE==='production') {
+        throw new Error('Seed de reset RBAC bloqueada em produção. Use a seed 14 específica da InfinitePay.');
+    }
+    await knex('permissoes_usuarios').del();
+    await knex('permissoes').del();
+
+    // 2. Definição das permissões por módulo
+    const listaPermissoes = BASE_RBAC_PERMISSIONS;
+
 
     // 3. Insere apenas as permissões no banco
     await knex('permissoes').insert(listaPermissoes);
