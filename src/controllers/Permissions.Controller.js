@@ -1,5 +1,6 @@
 import connection from "../database/connection.js";
 import { lancarErro } from "../utils/errorUtils.js";
+import {changedFinancialPrivileges} from '../utils/financialPermissionChanges.js';
 
 export const listarPermissoes = async (req, res, next) => {
     try {
@@ -116,6 +117,24 @@ export const editarPermissoesDoUsuario = async (req, res, next) => {
         if (!usuarioExiste) {
             await trx.rollback();
             lancarErro('Usuário não encontrado', 404);
+        }
+
+        // Permissões financeiras sensíveis só podem ser alteradas por uma
+        // conta administradora atualmente ativa. Conferir o cargo no banco
+        // (não confiar no cargo armazenado no JWT ou na interface).
+        const currentFinancial = await trx('permissoes_usuarios as pu')
+            .join('permissoes as p','p.id','pu.permissao_id')
+            .where('pu.usuario_id',usuario_id)
+            .whereIn('p.nome',['pagamentos.configurar','pagamentos.conciliar','pagamentos.ativar_producao'])
+            .pluck('p.nome');
+        const financialChanges=changedFinancialPrivileges(currentFinancial,permissoes);
+        if(financialChanges.length) {
+            const administrator=await trx('usuarios as u')
+                .join('niveis_acesso as n','n.id','u.nivel_acesso_id')
+                .where({'u.id':req.usuario.id,'u.ativo':true,'n.ativo':true,'n.nome':'admin'})
+                .whereNull('u.deletado_em')
+                .first('u.id');
+            if(!administrator) lancarErro('Somente administradores podem alterar permissões financeiras sensíveis.',403);
         }
 
         // Deletando todas as permissões do usuário selecionado
