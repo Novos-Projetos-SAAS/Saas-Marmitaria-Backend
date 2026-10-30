@@ -56,7 +56,10 @@ try {
                 const marker=await client('infinitepay_identidade_ambiente').where({id:1}).first('ambiente','identidade');
                 report('DB_IDENTITY_ROW',Boolean(marker),'Registro id=1 da identidade financeira encontrado.');
                 if(marker) {
-                    report('DB_IDENTITY_PRODUCTION',marker.ambiente==='PRODUCAO','Registro autorizado como PRODUCAO.');
+                    const state=['NAO_CONFIGURADO','HOMOLOGACAO','PRODUCAO'].includes(marker.ambiente)
+                        ? marker.ambiente : 'DESCONHECIDO';
+                    report('DB_IDENTITY_PRODUCTION',state==='PRODUCAO',
+                        'Classificação do ambiente financeiro: '+state+'.');
                     report('DB_IDENTITY_MATCH',String(marker.identidade).toLowerCase()===config.databaseId,
                         'Identificador registrado coincide com INFINITEPAY_DATABASE_ID.');
                 }
