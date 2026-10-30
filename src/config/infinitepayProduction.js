@@ -107,5 +107,5 @@ export function configureProductionSocket(io,config,origins) {
     io.engine.use((req,res,next)=>productionSocketAllowed(req,config,origins)?next():next(new Error('Proxy não autorizado.')));
 }
 export function productionProxyConfigured(app,config) {
-    return app.locals.infinitepayProductionProxy===JSON.stringify([config.publicOrigin,config.proxies]);
+    return app.locals.infinitepayProductionProxy===JSON.stringify([config.publicOrigin,config.proxyMode,config.proxies]);
 }
