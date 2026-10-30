@@ -9,8 +9,6 @@ export const INFINITEPAY_ADMIN_SEED_PERMISSIONS = Object.freeze([
     'permissoes.visualizar',
     'permissoes.editar',
     'pagamentos.configurar',
-    'pagamentos.visualizar',
-    'pagamentos.conciliar',
     'pagamentos.ativar_producao'
 ]);
 
