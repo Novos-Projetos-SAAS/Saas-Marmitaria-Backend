@@ -58,3 +58,95 @@ node --test tests/resolveFinancialEnvironment.test.js tests/postgresConnection.t
 ```
 
 A suíte completa e os testes de integração PostgreSQL devem ser executados separadamente antes de liberar pagamentos reais. As refatorações acima não removem nenhuma validação da identidade de produção e não ampliam a duração das autorizações financeiras.
+
+## Testar localmente no Windows como produção (Neon + Vercel)
+
+Este é um modo **explicitamente habilitado** de teste de implantação. O backend continua com
+`NODE_ENV=production` e `INFINITEPAY_MODE=production`. O modo
+`INFINITEPAY_LOCAL_TEST=true` dispensa apenas o proxy de entrada específico do
+Render, exigindo que o processo escute exclusivamente em loopback e receba
+requisições externas através de um túnel HTTPS local.
+
+**Não existe uma forma de a Vercel atingir o Node local por meio da URL do Render.**
+A URL do Render sempre envia requisições ao processo hospedado no Render. Para
+testar o código Windows fim a fim, use um domínio de túnel HTTPS apontando para
+`http://127.0.0.1:3333`. Não exponha a porta 3333 no roteador.
+
+### 1. Túnel HTTPS local
+
+Use um túnel HTTPS com hostname público, por exemplo Cloudflare Tunnel.
+Uma alternativa temporária para desenvolvimento:
+
+```powershell
+cloudflared tunnel --url http://127.0.0.1:3333
+```
+
+O comando mostra uma URL `https://...trycloudflare.com`. Ela muda a cada
+inicialização do túnel, portanto atualize a variável `BACKEND_URL` antes
+de iniciar/reiniciar o backend. Um domínio fixo de túnel é preferível para
+testes recorrentes de webhook/checkout.
+
+### 2. Configure o arquivo .env local (não subir ao Git)
+
+```dotenv
+NODE_ENV=production
+INFINITEPAY_MODE=production
+INFINITEPAY_LOCAL_TEST=true
+INFINITEPAY_BIND_HOST=127.0.0.1
+DATABASE_URL=postgresql://USUARIO:SENHA@HOST-NEON/BANCO?sslmode=require
+FRONTEND_URL=https://frontend-de-preview.vercel.app
+BACKEND_URL=https://URL-DO-SEU-TUNEL.trycloudflare.com
+JWT_SECRET=<mesmo-segredo-compatível-com-a-sessão-que-você-usa>
+INFINITEPAY_DATABASE_ID=<uuid-existente-do-banco-selecionado>
+INFINITEPAY_ENCRYPTION_KEY=<chave-base64-correspondente-às-credenciais>
+INFINITEPAY_ENABLED=false
+```
+
+Remova do .env local as variáveis `RENDER`, `RENDER_EXTERNAL_URL`,
+`INFINITEPAY_TRUSTED_PROXY_IPS` e qualquer
+`INFINITEPAY_PUBLIC_ORIGIN` que ainda aponte para o Render.
+`INFINITEPAY_ALLOWED_PUBLIC_ORIGINS` e `ALLOWED_ORIGINS` podem ser
+omitidas para serem derivadas de `BACKEND_URL` e `FRONTEND_URL`; remova
+valores antigos para evitar conflito.
+
+Para executar o diagnóstico de configuração sem imprimir segredos:
+
+```powershell
+npm run diagnose:infinitepay:local
+npm run start
+```
+
+Se houver `INFINITEPAY_PRODUCTION_BLOCKED`, confira principalmente:
+identidade do banco na tabela `infinitepay_identidade_ambiente`, domínio
+HTTPS de túnel, domínio Vercel, TLS Neon, chaves do ambiente e ausência
+das variáveis `RENDER*` copiadas da nuvem. O diagnóstico valida regras
+de ambiente, não comprova conexão de banco ou autorização financeira.
+
+### 3. Conectar o frontend
+
+No ambiente **Preview** da Vercel, configure `NEXT_PUBLIC_API_URL` para
+a URL HTTPS do túnel e faça novo build/deploy do frontend. O
+`NEXT_PUBLIC_SITE_URL` deve ser o endereço correspondente da Preview.
+Reutilizar um frontend cujo `NEXT_PUBLIC_API_URL` aponta para o Render
+testa o backend do Render, **não** o Node que você está executando em casa.
+
+A aplicação precisa enviar cookies com `Secure` e credenciais habilitadas,
+e o backend precisa incluir a URL exata da Preview em `ALLOWED_ORIGINS`
+(automaticamente se `FRONTEND_URL` estiver correto). Para chamadas de
+webhook/retorno, o processo local deve permanecer ligado e o túnel ativo.
+
+### 4. Pagamentos reais e isolamento
+
+**Não utilize o mesmo banco Neon de produção simultaneamente em duas
+instâncias com processamento financeiro habilitado** (Render e Windows).
+Isso pode gerar competição entre workers, atualização de pedidos de
+clientes reais, alterações de estado e callbacks direcionados ao servidor
+errado. Prefira uma branch de banco isolada na Neon, com identidade
+financeira válida e credenciais de teste controladas, mais uma implantação
+Preview na Vercel.
+
+`INFINITEPAY_ENABLED=false` mantém cobranças desativadas enquanto você
+valida inicialização, migrações e conectividade. Alterar para `true`
+ainda exige autorizações administrativas explícitas, que expiram em até
+15 minutos, e pode movimentar dinheiro real. Não existe sandbox público
+para usar uma API Key de produção da InfinitePay sem transações reais.
