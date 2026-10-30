@@ -4,6 +4,11 @@
  */
 export async function seed(knex) {
 
+    // Esta seed apaga cadastros. Nunca execute em ambiente financeiro real.
+    if(process.env.NODE_ENV==='production' || process.env.INFINITEPAY_MODE==='production') {
+        throw new Error('Seed inicial destrutiva bloqueada em produção. Use a seed 14 específica da InfinitePay.');
+    }
+
     // 🧹 Tabelas seguras para limpar
     await knex('metodos_pagamento').del();
     await knex('tamanhos_marmitas').del();
