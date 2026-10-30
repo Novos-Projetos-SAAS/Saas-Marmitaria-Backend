@@ -13,8 +13,10 @@ export async function seed(knex) {
             deletado_em: null
         })
 
-    // Assinatura QZ exige concessão explícita, inclusive para administradores.
-    const permissoes = await knex('permissoes').whereNot('nome', 'impressao.assinar').select('id');
+    // Assinatura QZ e aprovação de produção InfinitePay exigem concessão
+    // individual explícita, inclusive para administradores.
+    const permissoes = await knex('permissoes')
+        .whereNotIn('nome', ['impressao.assinar', 'pagamentos.ativar_producao']).select('id');
 
     if (admins.length == 0 || permissoes.length == 0) {
         console.log(logSymbols.warning, chalk.yellow('Nenhum admin ou permissão encontrada para vincular.'));
