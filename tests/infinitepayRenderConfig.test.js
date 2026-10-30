@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    validateProductionEnvironment, productionRequestAllowed, configureProductionProxy
+    validateProductionEnvironment, productionRequestAllowed, configureProductionProxy, productionProxyConfigured
 } from '../src/config/infinitepayProduction.js';
 
 const renderEnv = {
@@ -36,6 +36,7 @@ test('Render requires no manually configured proxy IPs when platform identity is
     const app = {locals:{}, settings:{}, set(k,v){this.settings[k]=v;}, use(fn){this.middleware=fn;}};
     configureProductionProxy(app,cfg);
     assert.equal(app.settings['trust proxy'],1);
+    assert.equal(productionProxyConfigured(app,cfg),true);
 });
 
 test('Render mode fails closed without platform identity', () => {
