@@ -28,4 +28,6 @@ jobs:
           node --check knexfile.js
           node --check scripts/diagnose-infinitepay-local.js
           node --check scripts/diagnose-infinitepay-boot.js
-          node --test tests/resolveFinancialEnvironment.test.js tests/postgresConnection.test.js tests/infinitepayRenderConfig.test.js tests/infinitepayLocalTunnel.test.js
+          node --check src/database/seeds/14_infinitepay_admin_access.js
+          node --check src/utils/infinitepayAdminSeedPolicy.js
+          node --test tests/resolveFinancialEnvironment.test.js tests/postgresConnection.test.js tests/infinitepayRenderConfig.test.js tests/infinitepayLocalTunnel.test.js tests/infinitepayAdminSeedPolicy.test.js tests/financialPermissionChanges.test.js
