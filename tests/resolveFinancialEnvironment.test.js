@@ -52,3 +52,17 @@ test('does not alter development, disabled or test environments', () => {
 test('invalid frontend origin fails without enabling payments', () => {
     assert.throws(() => resolveFinancialEnvironment({...sample, FRONTEND_URL: 'not-a-url'}), TypeError);
 });
+
+test('master switch cannot override explicit per-capability shutdown or create approval', () => {
+    const enabled=resolveFinancialEnvironment({...sample, INFINITEPAY_ENABLED:'true',
+        INFINITEPAY_DELIVERY_ENABLED:'false'});
+    assert.equal(enabled.INFINITEPAY_CHECKOUT_ENABLED,'true');
+    assert.equal(enabled.INFINITEPAY_WORKER_ENABLED,'true');
+    assert.equal(enabled.INFINITEPAY_VERIFY_ENABLED,'true');
+    assert.equal(enabled.INFINITEPAY_DELIVERY_ENABLED,'false');
+    const disabled=resolveFinancialEnvironment({...sample, INFINITEPAY_ENABLED:'false',
+        INFINITEPAY_WORKER_ENABLED:'true'});
+    assert.equal(disabled.INFINITEPAY_WORKER_ENABLED,'false');
+    assert.equal(disabled.INFINITEPAY_CHECKOUT_ENABLED,'false');
+    assert.throws(() => resolveFinancialEnvironment({...sample, INFINITEPAY_ENABLED:'yes'}));
+});
