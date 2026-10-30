@@ -188,7 +188,7 @@ e não altera registros.
 ## A identidade do banco está em NAO_CONFIGURADO
 
 A migration `20261027000200_infinitepay_identidade_ambiente.js` cria o registro
-`id=1` com o UUID imutável gerado pelo PostgreSQL e com
+`id=1` com um UUID gerado pelo PostgreSQL e com
 `ambiente='NAO_CONFIGURADO'`. A migração **não promove** o banco automaticamente
 para produção. Se o preflight retorna `DB_IDENTITY_PRODUCTION` com falha e
 `DB_IDENTITY_MATCH` com sucesso, a causa é a classificação do ambiente,
