@@ -11,7 +11,8 @@
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
     "diagnose:infinitepay:local": "node scripts/diagnose-infinitepay-local.js",
-    "diagnose:infinitepay:boot": "node scripts/diagnose-infinitepay-boot.js"
+    "diagnose:infinitepay:boot": "node scripts/diagnose-infinitepay-boot.js",
+    "seed:infinitepay:admin": "knex seed:run --env production --specific=14_infinitepay_admin_access.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
