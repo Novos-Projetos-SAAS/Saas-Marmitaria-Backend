@@ -26,4 +26,5 @@ jobs:
           node --check src/config/infinitepayProduction.js
           node --check src/server.js
           node --check knexfile.js
-          node --test tests/resolveFinancialEnvironment.test.js tests/postgresConnection.test.js tests/infinitepayRenderConfig.test.js
+          node --check scripts/diagnose-infinitepay-local.js
+          node --test tests/resolveFinancialEnvironment.test.js tests/postgresConnection.test.js tests/infinitepayRenderConfig.test.js tests/infinitepayLocalTunnel.test.js
