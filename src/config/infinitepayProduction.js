@@ -26,10 +26,18 @@ export function validateProductionEnvironment(input) {
         const allowed=(env.INFINITEPAY_ALLOWED_PUBLIC_ORIGINS || '').split(',').filter(Boolean).map(v=>httpsOrigin(v.trim()).origin);
         if(!allowed.includes(publicOrigin) || !allowed.includes(success.origin) ||
             !(env.ALLOWED_ORIGINS || '').split(',').map(v=>v.trim()).includes(success.origin)) fail();
-        const proxies=(env.INFINITEPAY_TRUSTED_PROXY_IPS || '').split(',').map(v=>v.trim());
+        const proxies=(env.INFINITEPAY_TRUSTED_PROXY_IPS || '').split(',').map(v=>v.trim()).filter(Boolean);
         const bindHost=env.INFINITEPAY_BIND_HOST || '127.0.0.1';
         if(!['127.0.0.1','0.0.0.0'].includes(bindHost))fail();
-        if(!proxies.length || proxies.some(v=>!isIP(v) || ['0.0.0.0','::'].includes(v))) fail();
+        // Render terminates public HTTPS at its managed ingress. When its
+        // runtime identity is present, no manually discovered proxy IPs are needed.
+        // Outside Render, the explicit trusted-proxy allowlist remains mandatory.
+        const renderUrl=env.RENDER_EXTERNAL_URL ? new URL(env.RENDER_EXTERNAL_URL) : null;
+        const renderIngress=env.RENDER==='true' && env.RENDER_SERVICE_TYPE==='web' &&
+            renderUrl?.protocol==='https:' && renderUrl.hostname.endsWith('.onrender.com') &&
+            renderUrl.origin===env.RENDER_EXTERNAL_URL && bindHost==='0.0.0.0';
+        if((!renderIngress && !proxies.length) || proxies.some(v=>!isIP(v) || ['0.0.0.0','::'].includes(v)))fail();
+        const proxyMode=renderIngress && !proxies.length ? 'render' : 'allowlist';
         let database=env.DB_NAME, host=env.DB_HOST, port=Number(env.DB_PORT || 5432);
         if(env.DATABASE_URL) {
             const parsed = parsePostgresUrl(env.DATABASE_URL, {financialProduction:true});
@@ -39,7 +47,7 @@ export function validateProductionEnvironment(input) {
         for(const key of ['INFINITEPAY_CHECKOUT_ENABLED','INFINITEPAY_WORKER_ENABLED','INFINITEPAY_VERIFY_ENABLED','INFINITEPAY_DELIVERY_ENABLED'])
             if(env[key]!==undefined && !['true','false',''].includes(env[key])) fail();
         return {mode:'production',database,databaseId:env.INFINITEPAY_DATABASE_ID.toLowerCase(),host,port,
-            publicOrigin,successUrl:success.href,proxies,bindHost};
+            publicOrigin,successUrl:success.href,proxies,proxyMode,bindHost};
     } catch { throw productionBlocked(); }
 }
 export async function assertProductionDatabase(db,config) {
@@ -60,8 +68,14 @@ export async function assertProductionDatabase(db,config) {
     } catch { throw productionBlocked(); }
 }
 export function configureProductionProxy(app,config) {
-    const trusted=new Set(config.proxies.map(ip));
-    app.set('trust proxy',(address,hop)=>hop===0 && trusted.has(ip(address)));
+    if(config.proxyMode==='render') {
+        // Render owns the HTTP ingress; trust only the immediately adjacent
+        // Render hop, never arbitrary client-supplied X-Forwarded-For entries.
+        app.set('trust proxy',1);
+    } else {
+        const trusted=new Set(config.proxies.map(ip));
+        app.set('trust proxy',(address,hop)=>hop===0 && trusted.has(ip(address)));
+    }
     app.use((req,res,next)=>{
         // One verified hop. The edge must overwrite these headers, never append client input.
         if(!productionRequestAllowed(req,config)) {
@@ -69,13 +83,21 @@ export function configureProductionProxy(app,config) {
         }
         next();
     });
-    app.locals.infinitepayProductionProxy=JSON.stringify([config.publicOrigin,config.proxies]);
+    app.locals.infinitepayProductionProxy=JSON.stringify([config.publicOrigin,config.proxyMode,config.proxies]);
 }
 export function productionRequestAllowed(req,config) {
     const h=req.headers || {},forwarded=h['x-forwarded-for'];
-    return config.proxies.map(ip).includes(ip(req.socket?.remoteAddress)) && h.host===new URL(config.publicOrigin).host &&
-        h['x-forwarded-proto']==='https' && typeof forwarded==='string' && isIP(forwarded)!==0 &&
-        !h.forwarded && (!h['x-forwarded-host'] || h['x-forwarded-host']===h.host);
+    // Render can append a proxy chain. Validate its syntax, but never treat
+    // any client-controllable entry as proof of proxy identity.
+    const chain=typeof forwarded==='string' ? forwarded.split(',').map(v=>v.trim()) : [];
+    const validChain=chain.length>0 && chain.length<=16 && chain.every(v=>isIP(v)!==0);
+    const remote=ip(req.socket?.remoteAddress);
+    const trustedIngress=config.proxyMode==='render'
+        ? isIP(remote)!==0
+        : config.proxies.map(ip).includes(remote);
+    return trustedIngress && validChain && h.host===new URL(config.publicOrigin).host &&
+        h['x-forwarded-proto']==='https' && !h.forwarded &&
+        (!h['x-forwarded-host'] || h['x-forwarded-host']===h.host);
 }
 export function productionSocketAllowed(req,config,origins) {
     return productionRequestAllowed(req,config) && typeof req.headers.origin==='string' && origins.includes(req.headers.origin);
