@@ -1,4 +1,5 @@
 import { validateInfinitepayEnvironment } from './infinitepayApplication.js';
+import {resolveFinancialEnvironment} from './config/resolveFinancialEnvironment.js';
 import { initializeServerFinancial } from './infinitepayServerComposition.js';
 import { productionSocketAllowed, configureProductionSocket } from './config/infinitepayProduction.js';
 
@@ -11,6 +12,9 @@ import jwt from 'jsonwebtoken';
 
 
 dotenv.config();
+// Resolve optional Render/Neon conventions before validating payment production.
+// Never derive or enable payment capabilities here.
+Object.assign(process.env, resolveFinancialEnvironment(process.env));
 const financialEnvironment = validateInfinitepayEnvironment(process.env);
 const { default: app } = await import('./app.js');
 const { default: connection } = await import('./database/connection.js');
