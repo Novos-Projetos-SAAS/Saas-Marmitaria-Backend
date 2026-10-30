@@ -10,7 +10,8 @@
     "test": "node --test --test-isolation=none --test-concurrency=1 tests/**/*.test.js",
     "dev": "nodemon src/server.js",
     "start": "node src/server.js",
-    "diagnose:infinitepay:local": "node scripts/diagnose-infinitepay-local.js"
+    "diagnose:infinitepay:local": "node scripts/diagnose-infinitepay-local.js",
+    "diagnose:infinitepay:boot": "node scripts/diagnose-infinitepay-boot.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
