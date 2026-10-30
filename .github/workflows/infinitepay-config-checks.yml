@@ -1,0 +1,29 @@
+name: InfinitePay configuration checks
+
+on:
+  push:
+    branches:
+      - feature/infinitepay-checkout
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-configuration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Node syntax and production configuration tests
+        run: |
+          node --check src/config/resolveFinancialEnvironment.js
+          node --check src/config/postgresConnection.js
+          node --check src/config/infinitepayProduction.js
+          node --check src/server.js
+          node --check knexfile.js
+          node --test tests/resolveFinancialEnvironment.test.js tests/postgresConnection.test.js tests/infinitepayRenderConfig.test.js
