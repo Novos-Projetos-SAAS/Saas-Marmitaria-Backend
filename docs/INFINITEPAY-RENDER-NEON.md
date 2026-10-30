@@ -7,6 +7,7 @@ Este guia corresponde à branch `feature/infinitepay-checkout`. Ele simplifica a
 Variáveis definidas manualmente:
 
 ```dotenv
+NODE_ENV=production
 DATABASE_URL=postgresql://USUARIO:SENHA@HOST.neon.tech/BANCO?sslmode=require
 FRONTEND_URL=https://seu-site.com.br
 JWT_SECRET=<segredo-ja-existente-com-pelo-menos-32-caracteres>
@@ -16,7 +17,7 @@ INFINITEPAY_ENCRYPTION_KEY=<chave-base64-de-32-bytes>
 INFINITEPAY_ENABLED=false
 ```
 
-**Não copie os valores de exemplo. Não commite segredos.** O Render fornece `NODE_ENV=production`, `RENDER=true`, `RENDER_SERVICE_TYPE=web` e `RENDER_EXTERNAL_URL` em tempo de execução. No Render, o backend escuta em `0.0.0.0`, e o modo de entrada HTTP utiliza somente o hop de proxy da plataforma. Assim, `INFINITEPAY_TRUSTED_PROXY_IPS` não é necessário **quando essas variáveis da plataforma estão presentes e válidas**. Em outras hospedagens, permanece obrigatório fornecer IPs confiáveis explicitamente.
+**Não copie os valores de exemplo. Não commite segredos.** O Render fornece `NODE_ENV=production` em tempo de execução, mas esta aplicação roda migrações Knex durante o **build**, portanto configure `NODE_ENV=production` explicitamente no ambiente para aplicar as regras TLS de produção também no build. O Render fornece `RENDER=true`, `RENDER_SERVICE_TYPE=web` e `RENDER_EXTERNAL_URL` automaticamente. No Render, o backend escuta em `0.0.0.0`, e o modo de entrada HTTP utiliza somente o hop de proxy da plataforma. Assim, `INFINITEPAY_TRUSTED_PROXY_IPS` não é necessário **quando essas variáveis da plataforma estão presentes e válidas**. Em outras hospedagens, permanece obrigatório fornecer IPs confiáveis explicitamente.
 
 O backend deriva, se não houver um valor explícito:
 - `INFINITEPAY_DATABASE_NAME` da `DATABASE_URL`;
