@@ -24,5 +24,18 @@ export function resolveFinancialEnvironment(input = process.env) {
         }
     }
     if (env.RENDER === 'true') derive('INFINITEPAY_BIND_HOST', '0.0.0.0');
+    // One optional master switch replaces four repetitive Render settings.
+    // The switch only exposes capabilities for independent, explicit and
+    // expiring administrative authorization; it never creates authorization.
+    const switches = ['INFINITEPAY_CHECKOUT_ENABLED','INFINITEPAY_WORKER_ENABLED',
+        'INFINITEPAY_VERIFY_ENABLED','INFINITEPAY_DELIVERY_ENABLED'];
+    if (env.INFINITEPAY_ENABLED !== undefined && !['true','false',''].includes(env.INFINITEPAY_ENABLED)) {
+        throw new Error('INFINITEPAY_ENABLED inválido.');
+    }
+    if (env.INFINITEPAY_ENABLED === 'false') {
+        for (const name of switches) env[name] = 'false';
+    } else if (env.INFINITEPAY_ENABLED === 'true') {
+        for (const name of switches) derive(name, 'true');
+    }
     return env;
 }
