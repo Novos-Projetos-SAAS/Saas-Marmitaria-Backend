@@ -141,18 +141,28 @@ async function closeServer() {
     })();
     return shutdown;
 }
+let bootStage='FINANCIAL_INITIALIZATION';
 try {
     financial = await initializeServerFinancial({ app, db: connection, io, loadOrder: buscarPedidoCompletoPorId });
+    bootStage='HTTP_BIND';
     await new Promise((resolve, reject) => {
         httpServer.once('error', reject);
         httpServer.listen(PORT, financialEnvironment ? (financialEnvironment.bindHost || '127.0.0.1') : undefined, resolve);
     });
+    bootStage='FINANCIAL_WORKER_START';
     await financial.start();
     console.log(`\n${logSymbols.success} ${chalk.cyan(`API rodando na porta ${httpServer.address().port}`)}`);
     for (const signal of ['SIGTERM', 'SIGINT']) process.once(signal, () => {
         closeServer().catch(() => { process.exitCode = 1; });
     });
-} catch {
-    console.error('Inicialização indisponível; confira a configuração local sem registrar credenciais.');
+} catch (error) {
+    // Do not print raw exceptions: PostgreSQL and external APIs may embed
+    // connection strings, headers, credentials or request data in messages.
+    const safeCode=['INFINITEPAY_PRODUCTION_BLOCKED','INFINITEPAY_ACTIVATION_BLOCKED','EADDRINUSE','EACCES']
+        .includes(error?.code) ? error.code : 'BOOT_UNCLASSIFIED';
+    console.error('Inicialização indisponível:', {stage:bootStage,code:safeCode});
+    if(process.env.INFINITEPAY_LOCAL_TEST==='true') {
+        console.error('Diagnóstico sem credenciais: npm run diagnose:infinitepay:boot');
+    }
     await closeServer(); process.exitCode = 1;
 }
