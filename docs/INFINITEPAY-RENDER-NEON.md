@@ -231,3 +231,61 @@ persiste a classificação; não ativa pagamentos. Mantenha
 
 Reexecute `npm run diagnose:infinitepay:boot` e `npm start`. O modo local
 com túnel HTTPS não altera o requisito de `ambiente='PRODUCAO'`.
+
+## Seed isolada: promover usuário administrador e liberar acesso à InfinitePay
+
+As migrations criam as permissões, mas **não** concedem automaticamente
+`pagamentos.ativar_producao` a nenhuma pessoa. O comando abaixo promove
+**somente o usuário explicitamente selecionado** para o nível `admin` e
+adiciona permissões de gerenciamento RBAC e InfinitePay. **Não altera
+senha, e-mail, dados de pedidos, estados financeiros ou credenciais**.
+
+**Importante:** `npx knex seed:run` sem `--specific` executa seeds legadas
+que apagam dados e redefinem senhas. Nunca execute esse comando completo
+na Neon utilizada para pagamentos. As seeds destrutivas antigas agora
+rejeitam perfis de produção, mas o comando permitido é **somente a seed
+específica**.
+
+1. Confirme manualmente no banco Neon que o usuário 1 corresponde à conta
+   administradora pretendida, está ativo e não está excluído.
+2. Use um terminal PowerShell na pasta do backend:
+   ```powershell
+   git switch feature/infinitepay-checkout
+   git pull --ff-only
+
+   $env:SEED_INFINITEPAY_ADMIN_USER_ID = "1"
+   $env:SEED_INFINITEPAY_ADMIN_CONFIRM = "PROMOVER_USUARIO_1"
+   $env:INFINITEPAY_ENABLED = "false"
+   npm run seed:infinitepay:admin
+
+   Remove-Item Env:SEED_INFINITEPAY_ADMIN_USER_ID -ErrorAction SilentlyContinue
+   Remove-Item Env:SEED_INFINITEPAY_ADMIN_CONFIRM -ErrorAction SilentlyContinue
+   Remove-Item Env:INFINITEPAY_ENABLED -ErrorAction SilentlyContinue
+   ```
+   A configuração `INFINITEPAY_ENABLED=false` acima vale somente para
+   esse processo de seed. Não muda as configurações do Render ou as
+   autorizações já ativas de outros processos conectados ao mesmo banco.
+3. Confira o resultado sem listar segredos ou credenciais:
+   ```sql
+   SELECT u.id, u.nome, n.nome AS nivel_acesso, p.nome AS permissao
+   FROM usuarios u
+   JOIN niveis_acesso n ON n.id = u.nivel_acesso_id
+   JOIN permissoes_usuarios pu ON pu.usuario_id = u.id
+   JOIN permissoes p ON p.id = pu.permissao_id
+   WHERE u.id = 1
+     AND p.nome IN (
+       'permissoes.listar', 'permissoes.visualizar', 'permissoes.editar',
+       'pagamentos.configurar', 'pagamentos.visualizar',
+       'pagamentos.conciliar', 'pagamentos.ativar_producao'
+     )
+   ORDER BY p.nome;
+   ```
+   Resultado esperado: as sete permissões acima com `nivel_acesso=admin`.
+4. Faça logout e login novamente para atualizar o cargo contido no token.
+   As permissões podem ser administradas em
+   `/admin/usuarios/1/permissoes`. A concessão de permissões **não liga**
+   a InfinitePay, não inicia o worker e não cria aprovações financeiras.
+
+Se a seed falhar por falta de permissão no catálogo, confira as migrations
+e não crie permissões manualmente por meio do frontend. Se o usuário não
+existir, estiver inativo ou excluído, a seed interrompe sem modificá-lo.
