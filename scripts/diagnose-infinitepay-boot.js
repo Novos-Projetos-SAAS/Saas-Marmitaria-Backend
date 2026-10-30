@@ -38,8 +38,8 @@ try {
     if(connected) {
         let actual;
         try {
-            actual=(await client.raw('SELECT current_database() AS database, current_schema() AS schema')).rows[0];
-            report('DB_NAME_MATCH',actual?.database===config.database,'Nome do banco conectado corresponde à identidade configurada.');
+            actual=(await client.raw('SELECT current_database() AS name, current_schema() AS schema')).rows[0];
+            report('DB_NAME_MATCH',actual?.name===config.database,'Nome do banco conectado corresponde à identidade configurada.');
             report('DB_SCHEMA_SAFE',actual?.schema!=='infinitepay_demo','Schema de demonstração não utilizado.');
         } catch {
             report('DB_METADATA',false,'Metadados do banco inacessíveis.');
