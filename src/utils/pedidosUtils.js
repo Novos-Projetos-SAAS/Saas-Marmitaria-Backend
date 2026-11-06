@@ -1979,7 +1979,7 @@ export function selecionarProdutosJson() {
  * ============================================================
  */
 export async function buscarPedidoCompletoPorId(pedidoId) {
-    return connection('pedidos')
+    const pedido = await connection('pedidos')
         .leftJoin('metodos_pagamento', 'pedidos.metodo_pagamento_id', '=', 'metodos_pagamento.id')
         .select(
             'pedidos.*',
@@ -1989,6 +1989,8 @@ export async function buscarPedidoCompletoPorId(pedidoId) {
         )
         .where('pedidos.id', pedidoId)
         .first();
+    if (pedido) delete pedido.checkout_token_hash;
+    return pedido;
 }
 
 /**
@@ -2028,7 +2030,7 @@ export async function validarMetodoPagamento(metodoPagamentoId, trx) {
 
     const metodo = await connection('metodos_pagamento')
         .transacting(trx)
-        .where({ id, ativo: true })
+        .where({ id, ativo: true }).whereNull('deletado_em')
         .first();
 
     if (!metodo) {

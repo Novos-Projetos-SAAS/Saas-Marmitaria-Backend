@@ -1,4 +1,5 @@
 import 'dotenv/config'
+import { HistoricalMigrationSource } from './src/database/migrationSource.js';
 
 /**
  * @type { Object.<string, import("knex").Knex.Config> }
@@ -22,7 +23,7 @@ export default {
     client: 'pg',
     connection,
     migrations: {
-      directory: './src/database/migrations'
+      migrationSource: new HistoricalMigrationSource(connection)
     },
     seeds: {
       directory: './src/database/seeds'
@@ -33,7 +34,7 @@ export default {
     client: 'pg',
     connection,
     migrations: {
-      directory: './src/database/migrations'
+      migrationSource: new HistoricalMigrationSource(connection)
       },
     seeds: {
       directory: './src/database/seeds'

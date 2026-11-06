@@ -71,18 +71,18 @@ export const buscarDashboard = async (req, res, next) => {
     try {
         const { dataInicio, dataFim } = validarPeriodo(req.query);
 
-        const resumoQuery = connection("pedidos as p")
+        const resumoQuery = connection("vw_pedidos_vendas_elegiveis as p")
             .whereNull("p.deletado_em");
 
         filtrarPeriodo(resumoQuery, dataInicio, dataFim);
 
-        const ultimoPedidoQuery = connection("pedidos as p")
+        const ultimoPedidoQuery = connection("vw_pedidos_vendas_elegiveis as p")
             .whereNull("p.deletado_em");
 
         filtrarPeriodo(ultimoPedidoQuery, dataInicio, dataFim);
 
         const tamanhosQuery = connection("itens_pedido as ip")
-            .join("pedidos as p", "p.id", "=", "ip.pedido_id")
+            .join("vw_pedidos_vendas_elegiveis as p", "p.id", "=", "ip.pedido_id")
             .join("tamanhos_marmitas as tm", "tm.id", "=", "ip.tamanho_marmita_id")
             .whereNull("p.deletado_em")
             .whereNot("p.status", STATUS_CANCELADO);
@@ -90,7 +90,7 @@ export const buscarDashboard = async (req, res, next) => {
         filtrarPeriodo(tamanhosQuery, dataInicio, dataFim);
 
         const marmitasEspeciaisQuery = connection("itens_pedido as ip")
-            .join("pedidos as p", "p.id", "=", "ip.pedido_id")
+            .join("vw_pedidos_vendas_elegiveis as p", "p.id", "=", "ip.pedido_id")
             .leftJoin("marmitas_especiais as me", "me.id", "=", "ip.marmita_especial_id")
             .whereNotNull("ip.marmita_especial_id")
             .whereNull("p.deletado_em")
@@ -100,27 +100,27 @@ export const buscarDashboard = async (req, res, next) => {
 
         const alimentosQuery = connection("composicao_item_pedido as cip")
             .join("itens_pedido as ip", "ip.id", "=", "cip.item_pedido_id")
-            .join("pedidos as p", "p.id", "=", "ip.pedido_id")
+            .join("vw_pedidos_vendas_elegiveis as p", "p.id", "=", "ip.pedido_id")
             .join("alimentos as a", "a.id", "=", "cip.alimento_id")
             .whereNull("p.deletado_em")
             .whereNot("p.status", STATUS_CANCELADO);
 
         filtrarPeriodo(alimentosQuery, dataInicio, dataFim);
 
-        const pagamentosQuery = connection("pedidos as p")
+        const pagamentosQuery = connection("vw_pedidos_vendas_elegiveis as p")
             .join("metodos_pagamento as mp", "mp.id", "=", "p.metodo_pagamento_id")
             .whereNull("p.deletado_em")
             .whereNot("p.status", STATUS_CANCELADO);
 
         filtrarPeriodo(pagamentosQuery, dataInicio, dataFim);
 
-        const entregasQuery = connection("pedidos as p")
+        const entregasQuery = connection("vw_pedidos_vendas_elegiveis as p")
             .whereNull("p.deletado_em")
             .whereNot("p.status", STATUS_CANCELADO);
 
         filtrarPeriodo(entregasQuery, dataInicio, dataFim);
 
-        const statusQuery = connection("pedidos as p")
+        const statusQuery = connection("vw_pedidos_vendas_elegiveis as p")
             .whereNull("p.deletado_em");
 
         filtrarPeriodo(statusQuery, dataInicio, dataFim);
@@ -166,7 +166,7 @@ export const buscarDashboard = async (req, res, next) => {
                         p.criado_em::date AS data,
                         COALESCE(SUM(CASE WHEN p.status <> ? THEN p.valor_total ELSE 0 END), 0) AS faturamento,
                         COUNT(p.id)::int AS pedidos
-                    FROM pedidos p
+                    FROM vw_pedidos_vendas_elegiveis p
                     WHERE p.deletado_em IS NULL
                       AND p.criado_em::date BETWEEN ?::date AND ?::date
                     GROUP BY p.criado_em::date

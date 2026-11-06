@@ -25,6 +25,8 @@ import CategoriasProdutosRoutes from './routes/CategoriaProduto.Routes.js';
 import ProdutosRoutes from './routes/Produtos.Routes.js';
 
 import errorHandler from './middlewares/errorHandler.js';
+import InfinitepayConfigRoutes from './routes/InfinitepayConfig.Routes.js';
+import PagamentosRoutes, { legacyInfinitepayWebhook } from './routes/Pagamentos.Routes.js';
 
 import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './config/swagger.js';
@@ -46,7 +48,7 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 const allowedOrigins = process.env.ALLOWED_ORIGINS
-    ? process.env.ALLOWED_ORIGINS.split(',')
+    ? process.env.ALLOWED_ORIGINS.split(',').map(origin => origin.trim()).filter(Boolean)
     : [];
 
 // 2. Atualização Importante no CORS
@@ -63,7 +65,7 @@ app.use(cors({
     },
     credentials: true,
     // ADICIONE ISSO: Permite que o Front envie o Token no header
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Infinitepay-CSRF'],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
 }));
 
@@ -100,6 +102,9 @@ app.use('/dashboard', DashboardRoutes)
 app.use('/categorias-produtos', CategoriasProdutosRoutes);
 app.use('/produtos', ProdutosRoutes);
 app.use('/keep-alive', KeepAliveRoutes);
+app.use('/configuracoes/infinitepay', InfinitepayConfigRoutes);
+app.use('/pagamentos', PagamentosRoutes);
+app.post('/webhooks/infinitepay', legacyInfinitepayWebhook);
 app.use('/configuracoes', DadosEmpresaRoutes);
 app.use('/qz', QzRoutes);
 

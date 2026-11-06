@@ -3,8 +3,12 @@ import logSymbols from 'log-symbols';
 import connection from '../database/connection.js';
 
 export default async function errorHandler(err, req, res, next) {
-    const statusCode = err.statusCode || 500;
-    const message = err.message || 'Erro interno no servidor';
+    const statusCode = err.statusCode || err.status || 500;
+    const financialRequest = /^\/(pagamentos|configuracoes\/infinitepay|webhooks\/infinitepay)(\/|$)/.test(req.path);
+    const message = financialRequest && statusCode >= 500
+        ? 'Não foi possível concluir a operação de pagamento. Confira a configuração ou tente conciliar novamente.'
+        : err.message || 'Erro interno no servidor';
+    const endpoint = financialRequest ? req.path : req.originalUrl;
     const status = statusCode >= 500 ? 'error' : 'fail';
     const timestamp = new Date().toISOString();
 
@@ -24,9 +28,9 @@ export default async function errorHandler(err, req, res, next) {
     }
 
     // Somente erros internos reais são registrados como erro no terminal e no banco.
-    console.error(`\n${logSymbols.error} ${chalk.red(`[${timestamp}] Erro em ${req.method} ${req.originalUrl}`)}`);
+    console.error(`\n${logSymbols.error} ${chalk.red(`[${timestamp}] Erro em ${req.method} ${endpoint}`)}`);
     console.error(chalk.red(`Mensagem: ${message}`));
-    console.error(chalk.red(err.stack));
+    if (!financialRequest) console.error(chalk.red(err.stack));
     console.error(chalk.gray('--------------------------------------------------\n'));
 
     try {
@@ -34,16 +38,16 @@ export default async function errorHandler(err, req, res, next) {
             tipo: 'ERRO',
             usuario_id: req.usuario?.id || null,
             metodo: req.method,
-            endpoint: req.originalUrl,
+            endpoint,
             acao: 'SISTEMA.ERRO',
             descricao: message,
             payload: JSON.stringify({
                 code: err.code || null,
-                details: err.details || null,
-                stack: process.env.NODE_ENV === 'production' ? '🔒' : err.stack,
-                body: req.body,
+                details: financialRequest ? null : err.details || null,
+                stack: financialRequest || process.env.NODE_ENV === 'production' ? '🔒' : err.stack,
+                body: financialRequest ? '[REDACTED]' : req.body,
                 params: req.params,
-                query: req.query
+                query: financialRequest ? '[REDACTED]' : req.query
             })
         });
     } catch (dbError) {

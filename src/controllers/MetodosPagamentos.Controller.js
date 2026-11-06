@@ -9,11 +9,14 @@ export const listarMetodosDePagamentosAtivos = async (req, res, next) => {
             .where('ativo', true)
             .whereNull('deletado_em')
             .orderBy('nome', 'asc')
-            .select('id', 'nome')
+            .select('id', 'nome', 'codigo', 'tipo_financeiro')
         
+        const config = await connection('config_infinitepay').where({ id: 1 }).first('ativo', 'handle', 'credencial_atual_id');
+        const disponiveis = metodos.filter(metodo => metodo.codigo !== 'INFINITEPAY' ||
+            (config?.ativo && config.handle && config.credencial_atual_id));
         return res.status(200).json({
             status: 'success',
-            data: metodos
+            data: disponiveis
         })
 
     } catch (error) {

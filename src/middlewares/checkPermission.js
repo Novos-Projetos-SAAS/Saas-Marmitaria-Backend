@@ -16,7 +16,7 @@ export const checkPermission = (permissaoRequerida) => {
             const temPermissao = await connection('permissoes_usuarios')
                 .join('permissoes', 'permissoes_usuarios.permissao_id', '=', 'permissoes.id')
                 .where('permissoes_usuarios.usuario_id', usuarioId)
-                .andWhere('permissoes.nome', permissaoRequerida)
+                .whereIn('permissoes.nome', Array.isArray(permissaoRequerida) ? permissaoRequerida : [permissaoRequerida])
                 .first();
 
             if (!temPermissao) {

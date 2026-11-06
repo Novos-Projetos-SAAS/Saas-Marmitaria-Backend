@@ -1,4 +1,5 @@
 import connection from "../database/connection.js";
+import { checkoutForOrder, checkoutTokenHash, paymentError, prepareOnlinePayment } from "../services/infinitepayPaymentService.js";
 import { lancarErro } from "../utils/errorUtils.js";
 import {
     buscarPedidoCompletoPorId,
@@ -81,9 +82,24 @@ export const criarPedido = async (req, res, next) => {
 
         trx = await connection.transaction();
 
+        const online = req.infinitepayCheckout === true;
+        const tokenHash = online ? checkoutTokenHash(req.body.client_request_id) : null;
+        if (online) {
+            await trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [tokenHash]);
+            const existing = await trx('pedidos').where({ checkout_token_hash: tokenHash }).first('id');
+            if (existing) {
+                await trx.commit();
+                const payment = await checkoutForOrder(existing.id);
+                return res.status(payment.checkout_url ? 200 : 202).json({ status: 'success',
+                    data: { ...payment, access_token: req.body.client_request_id } });
+            }
+        }
         // Revalida as regras críticas no momento exato da criação do pedido.
         await validarLojaAberta(trx);
-        await validarMetodoPagamento(metodo_pagamento_id, trx);
+        const metodo = await validarMetodoPagamento(metodo_pagamento_id, trx);
+        if ((metodo.codigo === 'INFINITEPAY') !== online) {
+            throw paymentError('Utilize o checkout próprio para pagamentos InfinitePay.', 400);
+        }
 
         const [pedido] = await connection("pedidos")
             .transacting(trx)
@@ -95,6 +111,8 @@ export const criarPedido = async (req, res, next) => {
                 metodo_entrega,
                 metodo_pagamento_id,
                 status: "Pendente",
+                fluxo_pagamento: online ? 'INFINITEPAY' : 'POSTERIOR',
+                checkout_token_hash: tokenHash,
                 valor_total: 0,
                 observacoes: observacoesFormatadas,
                 precisa_troco: Boolean(precisa_troco),
@@ -124,6 +142,10 @@ export const criarPedido = async (req, res, next) => {
             .where({ id: pedido.id })
             .update({ valor_total: valorTotalPedido });
 
+        if (online) {
+            await prepareOnlinePayment(pedido, valorTotalCentavos, trx);
+        }
+
         await connection("logs")
             .transacting(trx)
             .insert({
@@ -146,6 +168,12 @@ export const criarPedido = async (req, res, next) => {
             });
 
         await trx.commit();
+
+        if (online) {
+            const payment = await checkoutForOrder(pedido.id);
+            return res.status(payment.checkout_url ? 201 : 202).json({ status: 'success',
+                data: { ...payment, access_token: req.body.client_request_id } });
+        }
 
         // O pedido já está confirmado no banco. A falha do Socket não pode invalidar a criação nem induzir o cliente a reenviar o pedido.
         try {
@@ -218,6 +246,14 @@ export const editarPedido = async (req, res, next) => {
 
         if (!pedido) {
             lancarErro("Pedido não encontrado.", 404);
+        }
+
+        if (pedido.fluxo_pagamento === 'INFINITEPAY') {
+            throw paymentError('Pedidos com cobrança online não podem ter itens, valores ou forma de pagamento alterados.');
+        }
+        if (metodo_pagamento_id !== undefined) {
+            const metodo = await validarMetodoPagamento(metodo_pagamento_id, trx);
+            if (metodo.codigo === 'INFINITEPAY') throw paymentError('Crie uma cobrança pelo checkout InfinitePay.');
         }
 
         if (pedido.status !== "Pendente") {
@@ -397,6 +433,14 @@ export const alterarStatusPedido = async (req, res, next) => {
             lancarErro("Pedido não encontrado.", 404);
         }
 
+        if (pedido.fluxo_pagamento === 'INFINITEPAY' && status !== 'Cancelado') {
+            const confirmado = await trx('pagamentos').where({ pedido_id: pedido.id })
+                .whereIn('status', ['PAGA', 'LIQUIDADA']).whereNotNull('provider_verified_at').first('id');
+            if (!pedido.liberado_cozinha_em || !confirmado) {
+                throw paymentError('Aguarde a confirmação do pagamento antes de iniciar a produção.');
+            }
+        }
+
         if (pedido.metodo_entrega === "Retirada" && status === "Saiu para Entrega") {
             lancarErro('Pedidos de retirada não podem receber o status "Saiu para Entrega".', 400);
         }
@@ -525,7 +569,15 @@ export const listarPedidosAdmin = async (req, res, next) => {
         const porPagina = Math.min(Math.max(Number.parseInt(limit, 10) || 10, 1), 100);
         const offset = (pagina - 1) * porPagina;
 
-        const baseQuery = connection("pedidos").whereNull("pedidos.deletado_em");
+        const baseQuery = connection("pedidos").whereNull("pedidos.deletado_em")
+            .where(function () {
+                this.where('pedidos.fluxo_pagamento', 'POSTERIOR').orWhere(function () {
+                    this.where('pedidos.fluxo_pagamento', 'INFINITEPAY').whereNotNull('pedidos.liberado_cozinha_em')
+                        .whereExists(connection('pagamentos').select(connection.raw('1'))
+                            .whereRaw('pagamentos.pedido_id = pedidos.id').whereIn('pagamentos.status', ['PAGA', 'LIQUIDADA'])
+                            .whereNotNull('pagamentos.provider_verified_at'));
+                });
+            });
 
         if (String(search).trim()) {
             const termo = String(search).trim();
@@ -572,7 +624,7 @@ export const listarPedidosAdmin = async (req, res, next) => {
                 per_page: porPagina,
                 totalPages: Math.max(Math.ceil(totalRegistros / porPagina), 1)
             },
-            data: pedidos
+            data: pedidos.map(({ checkout_token_hash, ...pedido }) => pedido)
         });
     } catch (error) {
         next(error);
@@ -600,6 +652,7 @@ export const listarPedidosPorTelefoneUsuario = async (req, res, next) => {
                 selecionarProdutosJson()
             )
             .where("pedidos.telefone_cliente", telefone)
+            .where('pedidos.fluxo_pagamento', 'POSTERIOR')
             .whereNull("pedidos.deletado_em")
             .orderBy("pedidos.criado_em", "desc");
 
@@ -713,12 +766,22 @@ export const restaurarPedido = async (req, res, next) => {
             });
         }
 
+        let liberadoCozinhaEm = pedido.liberado_cozinha_em;
+        if (pedido.fluxo_pagamento === 'INFINITEPAY') {
+            const confirmado = await trx('pagamentos').where({ pedido_id: pedido.id })
+                .whereIn('status', ['PAGA', 'LIQUIDADA']).whereNotNull('provider_verified_at')
+                .forUpdate().first();
+            liberadoCozinhaEm = confirmado && Number(confirmado.valor_centavos) === Math.round(Number(pedido.valor_total) * 100)
+                ? pedido.liberado_cozinha_em || connection.fn.now() : null;
+        }
+
         await connection("pedidos")
             .transacting(trx)
             .where({ id })
             .update({
                 deletado_em: null,
                 status: "Pendente",
+                liberado_cozinha_em: liberadoCozinhaEm,
                 atualizado_em: connection.fn.now()
             });
 
@@ -740,7 +803,7 @@ export const restaurarPedido = async (req, res, next) => {
 
         await trx.commit();
 
-        if (global.io) {
+        if (global.io && (pedido.fluxo_pagamento !== 'INFINITEPAY' || liberadoCozinhaEm)) {
             global.io.to("pedidos").emit("pedido_atualizado", {
                 pedido_id: Number(id),
                 evento: "restaurado",
