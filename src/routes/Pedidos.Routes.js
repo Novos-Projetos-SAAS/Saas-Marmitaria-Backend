@@ -11,6 +11,7 @@ import {
 } from "../controllers/Pedidos.Controller.js";
 import { verifyToken } from "../middlewares/verifyToken.js";
 import { checkPermission } from "../middlewares/checkPermission.js";
+import { limitadorPagamentoPublico } from "../middlewares/rateLimiter.js";
 
 const router = Router();
 
@@ -70,7 +71,7 @@ const router = Router();
  *               status: "fail"
  *               message: "Dados do pedido inválidos."
  */
-router.post('/', criarPedido)
+router.post('/', limitadorPagamentoPublico, criarPedido)
 
 /**
  * @swagger

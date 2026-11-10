@@ -134,3 +134,9 @@ DB_PASSWORD=
 DB_NAME=
 
 rodar seeds direto na nuvem: $env:NODE_ENV="production"; npx knex seed:run 9tem que colocar a database_url no .env
+
+roda tunnel pela cloudflared
+frontend
+cloudflared tunnel --url http://127.0.0.1:3000
+backend
+cloudflared tunnel --url http://127.0.0.1:3333

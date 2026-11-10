@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import rateLimit from 'express-rate-limit';
+import { limitadorPagamentoPublico } from '../middlewares/rateLimiter.js';
 import { criarPedido } from '../controllers/Pedidos.Controller.js';
 import { verifyToken } from '../middlewares/verifyToken.js';
 import { checkPermission } from '../middlewares/checkPermission.js';
@@ -7,8 +7,6 @@ import { csrfToken, protectInfinitepayWrite, requireActiveFinancialUser } from '
 import { adminPayments, confirmPayment, ownedPayment, paymentError, reconcileOrder } from '../services/infinitepayPaymentService.js';
 
 const router = Router();
-const publicLimit = rateLimit({ windowMs: 60000, limit: 60, standardHeaders: true, legacyHeaders: false,
-    message: { status: 'fail', message: 'Aguarde um minuto antes de consultar novamente.' } });
 const asyncRoute = action => async (req, res, next) => {
     res.set('Cache-Control', 'no-store');
     try { await action(req, res); } catch (error) { next(error); }
@@ -24,16 +22,15 @@ const token = req => {
     return header.slice(7);
 };
 
-router.post('/checkout', publicLimit, (req, res, next) => {
-    req.infinitepayCheckout = true;
+router.post('/checkout', limitadorPagamentoPublico, (req, res, next) => {
     res.set('Cache-Control', 'no-store');
     return criarPedido(req, res, next);
 });
 
-router.get('/pedidos/:id', publicLimit, asyncRoute(async (req, res) => {
+router.get('/pedidos/:id', limitadorPagamentoPublico, asyncRoute(async (req, res) => {
     res.json({ status: 'success', data: await ownedPayment(orderId(req), token(req)) });
 }));
-router.post('/pedidos/:id/confirmar', publicLimit, asyncRoute(async (req, res) => {
+router.post('/pedidos/:id/confirmar', limitadorPagamentoPublico, asyncRoute(async (req, res) => {
     const pedido = await ownedPayment(orderId(req), token(req));
     if (req.body?.order_nsu && req.body.order_nsu !== pedido.order_nsu) throw paymentError('Cobrança não pertence ao pedido.', 400);
     await confirmPayment(pedido.order_nsu, req.body || {});

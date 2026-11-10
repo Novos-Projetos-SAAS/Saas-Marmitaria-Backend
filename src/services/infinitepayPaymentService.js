@@ -35,25 +35,40 @@ function publicOrigins() {
         redirect: new URL('/pedido/sucesso', frontend.origin).href };
 }
 
-export async function requireOnlineConfiguration(db = connection) {
-    const config = await getInfinitepayConfig(db);
-    if (!config?.ativo || !config.credencial_atual_id || !config.handle) {
-        throw paymentError('Novas cobranças InfinitePay estão desabilitadas.');
+export function infinitepayMethod(metodo) {
+    const normalize = value => String(value ?? '').normalize('NFD').replace(/\p{M}/gu, '')
+        .toUpperCase().replace(/[^A-Z0-9]+/g, ' ').trim();
+    const nome = normalize(metodo.nome);
+    const codigo = normalize(metodo.codigo);
+    if (/\b(ENTREGA|PRESENCIAL|BALCAO|RETIRADA)\b/.test(`${nome} ${codigo}`)) return null;
+    if (metodo.tipo_financeiro === 'PIX' || codigo === 'PIX') return 'pix';
+    if (metodo.tipo_financeiro === 'CREDITO' || codigo === 'CARTAO CREDITO') return 'credit_card';
+    // The original catalog has names but may lack financial classification.
+    if (metodo.tipo_financeiro && metodo.tipo_financeiro !== 'OUTRO') return null;
+    if (nome === 'PIX') return 'pix';
+    if (nome === 'CARTAO DE CREDITO' || nome === 'CARTAO CREDITO' || nome === 'CREDITO') return 'credit_card';
+    return null;
+}
+
+async function requireOnlineConfiguration(db, config) {
+    if (config?.ativo !== true || !config.credencial_atual_id || !config.handle) {
+        throw paymentError('Configuração de checkout InfinitePay indisponível.', 503);
     }
-    await getPaymentCredential(config.credencial_atual_id, db);
-    try { publicOrigins(); } catch (error) {
+    const credential = await getPaymentCredential(config.credencial_atual_id, db);
+    if (credential.handle !== config.handle) {
+        throw paymentError('A credencial InfinitePay não corresponde à conta configurada.', 503);
+    }
+    try { return publicOrigins(); } catch (error) {
         if (error.statusCode) throw error;
         throw paymentError('URL pública HTTPS da hospedagem indisponível.', 503);
     }
-    return config;
 }
 
-export async function prepareOnlinePayment(pedido, valorCentavos, db) {
-    const config = await requireOnlineConfiguration(db);
+export async function prepareOnlinePayment(pedido, valorCentavos, db, config, method) {
+    const { webhook, redirect } = await requireOnlineConfiguration(db, config);
     if (!Number.isSafeInteger(valorCentavos) || valorCentavos < 100) {
         throw paymentError('O pagamento online deve ser de pelo menos R$ 1,00.', 400);
     }
-    const { webhook, redirect } = publicOrigins();
     const orderNsu = `pedido-${pedido.id}-${randomUUID()}`;
     const validUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     const payload = {
@@ -62,7 +77,9 @@ export async function prepareOnlinePayment(pedido, valorCentavos, db) {
         customer: { name: String(pedido.nome_cliente).trim(), phone_number: `+55${pedido.telefone_cliente}` },
         webhook_url: webhook, redirect_url: redirect,
         options: { assured_installments: config.assured_installments, single_payment: true,
-            payment_methods_enabled: ['pix', 'credit_card'], require_delivery_address: false, valid_until: validUntil }
+            // InfinitePay always allows card; Pix can be enabled in addition.
+            payment_methods_enabled: method === 'pix' ? ['pix', 'credit_card'] : ['credit_card'],
+            require_delivery_address: false, valid_until: validUntil }
     };
     await db('pagamentos').insert({ pedido_id: pedido.id, tentativa_numero: 1, order_nsu: orderNsu,
         status: 'AGUARDANDO', valor_centavos: valorCentavos, credencial_id: config.credencial_atual_id,
@@ -141,8 +158,10 @@ export async function checkoutForOrder(pedidoId, { recover = false } = {}) {
         const stalled = payment.status === 'CRIANDO' && Date.now() - new Date(payment.atualizado_em).getTime() > 30000;
         if (payment.status !== 'AGUARDANDO' && !(recover && (payment.status === 'INCERTA' || stalled))) return null;
         if (pedido.status === 'Cancelado' || pedido.deletado_em) return null;
-        await requireOnlineConfiguration(db);
+        // Existing links and payment confirmation remain available while disabled.
         if (!payment.checkout_payload) return null; // Existing historical links are never recreated.
+        const config = await getInfinitepayConfig(db, { lock: true });
+        if (config.ativo !== true) return null;
         if (new Date(payment.valid_until).getTime() <= Date.now()) {
             throw paymentError('O checkout expirou. Confira a cobrança na InfinitePay antes de criar outro pedido.');
         }

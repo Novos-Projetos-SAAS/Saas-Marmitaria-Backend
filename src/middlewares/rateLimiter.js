@@ -125,3 +125,6 @@ export const limitadorCadastro = rateLimit({
     standardHeaders: true,
     legacyHeaders: false
 });
+
+export const limitadorPagamentoPublico = rateLimit({ windowMs: 60000, limit: 60, standardHeaders: true, legacyHeaders: false,
+    message: { status: 'fail', message: 'Aguarde um minuto antes de consultar novamente.' } });

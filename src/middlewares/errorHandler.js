@@ -4,7 +4,8 @@ import connection from '../database/connection.js';
 
 export default async function errorHandler(err, req, res, next) {
     const statusCode = err.statusCode || err.status || 500;
-    const financialRequest = /^\/(pagamentos|configuracoes\/infinitepay|webhooks\/infinitepay)(\/|$)/.test(req.path);
+    const financialRequest = /^\/(pagamentos|configuracoes\/infinitepay|webhooks\/infinitepay)(\/|$)/.test(req.path)
+        || (req.method === 'POST' && /^\/pedidos\/?$/.test(req.path) && req.body?.client_request_id !== undefined);
     const message = financialRequest && statusCode >= 500
         ? 'Não foi possível concluir a operação de pagamento. Confira a configuração ou tente conciliar novamente.'
         : err.message || 'Erro interno no servidor';

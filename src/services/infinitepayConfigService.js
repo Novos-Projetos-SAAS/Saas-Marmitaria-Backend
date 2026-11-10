@@ -2,8 +2,10 @@ import connection from '../database/connection.js';
 import { encryptApiKey, decryptApiKey } from '../utils/infinitepayCredentials.js';
 import { lancarErro } from '../utils/errorUtils.js';
 
-export async function getInfinitepayConfig(db = connection) {
-    const config = await db('config_infinitepay').where({ id: 1 }).first();
+export async function getInfinitepayConfig(db = connection, { lock = false } = {}) {
+    const query = db('config_infinitepay').where({ id: 1 });
+    if (lock) query.forShare();
+    const config = await query.first();
     if (!config) lancarErro('Configuração InfinitePay indisponível.', 503);
     return config;
 }

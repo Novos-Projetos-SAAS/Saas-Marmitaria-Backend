@@ -144,3 +144,9 @@ vite.config.ts.timestamp-*
 
 
 # Chaves de segurança do Qz Tray
+
+graphify-out/
+.agents
+.codex
+.serena
+AGENTS.md

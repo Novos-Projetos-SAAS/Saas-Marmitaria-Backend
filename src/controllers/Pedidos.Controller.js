@@ -1,5 +1,6 @@
 import connection from "../database/connection.js";
-import { checkoutForOrder, checkoutTokenHash, paymentError, prepareOnlinePayment } from "../services/infinitepayPaymentService.js";
+import { checkoutForOrder, checkoutTokenHash, infinitepayMethod, paymentError, prepareOnlinePayment } from "../services/infinitepayPaymentService.js";
+import { getInfinitepayConfig } from "../services/infinitepayConfigService.js";
 import { lancarErro } from "../utils/errorUtils.js";
 import {
     buscarPedidoCompletoPorId,
@@ -15,10 +16,37 @@ import {
     validarMetodoPagamento
 } from "../utils/pedidosUtils.js";
 
+async function responderCheckout(res, pedidoId, token, reused = false) {
+    const payment = await checkoutForOrder(pedidoId);
+    const statusCode = payment.checkout_url ? (reused ? 200 : 201) : 202;
+    return res.status(statusCode).json({ status: 'success', data: {
+        ...payment, fluxo_pagamento: 'INFINITEPAY', access_token: token, ...(reused ? { reused } : {})
+    } });
+}
+
 export const criarPedido = async (req, res, next) => {
     let trx;
 
     try {
+        const token = req.usuario ? undefined : req.body?.client_request_id;
+        const tokenHash = token === undefined ? null : checkoutTokenHash(token);
+        if (tokenHash) {
+            trx = await connection.transaction();
+            res.set('Cache-Control', 'no-store');
+            await trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [tokenHash]);
+            const existing = await trx('pedidos').where({ checkout_token_hash: tokenHash })
+                .first('id', 'fluxo_pagamento', 'valor_total');
+            if (existing) {
+                await trx.commit();
+                if (existing.fluxo_pagamento === 'INFINITEPAY') {
+                    return await responderCheckout(res, existing.id, token, true);
+                }
+                return res.status(200).json({ status: 'success', data: {
+                    pedido_id: existing.id, total: Number(existing.valor_total), fluxo_pagamento: 'POSTERIOR', reused: true
+                } });
+            }
+        }
+
         let {
             nome_cliente,
             telefone_cliente,
@@ -80,26 +108,21 @@ export const criarPedido = async (req, res, next) => {
             ? null
             : String(endereco_cliente || "").trim() || null;
 
-        trx = await connection.transaction();
+        trx ??= await connection.transaction();
 
-        const online = req.infinitepayCheckout === true;
-        const tokenHash = online ? checkoutTokenHash(req.body.client_request_id) : null;
-        if (online) {
-            await trx.raw('SELECT pg_advisory_xact_lock(hashtextextended(?, 0))', [tokenHash]);
-            const existing = await trx('pedidos').where({ checkout_token_hash: tokenHash }).first('id');
-            if (existing) {
-                await trx.commit();
-                const payment = await checkoutForOrder(existing.id);
-                return res.status(payment.checkout_url ? 200 : 202).json({ status: 'success',
-                    data: { ...payment, access_token: req.body.client_request_id } });
-            }
-        }
         // Revalida as regras críticas no momento exato da criação do pedido.
         await validarLojaAberta(trx);
         const metodo = await validarMetodoPagamento(metodo_pagamento_id, trx);
-        if ((metodo.codigo === 'INFINITEPAY') !== online) {
-            throw paymentError('Utilize o checkout próprio para pagamentos InfinitePay.', 400);
+        if (metodo.codigo === 'INFINITEPAY') {
+            throw paymentError('Selecione uma modalidade de pagamento disponível.', 400);
         }
+        const method = req.usuario ? null : infinitepayMethod(metodo);
+        const config = method ? await getInfinitepayConfig(trx, { lock: true }) : null;
+        if (method && typeof config?.ativo !== 'boolean') {
+            throw paymentError('Status do checkout InfinitePay indisponível.', 503);
+        }
+        const online = config?.ativo === true;
+        if (online && !tokenHash) throw paymentError('Identificador de checkout obrigatório.', 400);
 
         const [pedido] = await connection("pedidos")
             .transacting(trx)
@@ -143,7 +166,7 @@ export const criarPedido = async (req, res, next) => {
             .update({ valor_total: valorTotalPedido });
 
         if (online) {
-            await prepareOnlinePayment(pedido, valorTotalCentavos, trx);
+            await prepareOnlinePayment(pedido, valorTotalCentavos, trx, config, method);
         }
 
         await connection("logs")
@@ -169,11 +192,7 @@ export const criarPedido = async (req, res, next) => {
 
         await trx.commit();
 
-        if (online) {
-            const payment = await checkoutForOrder(pedido.id);
-            return res.status(payment.checkout_url ? 201 : 202).json({ status: 'success',
-                data: { ...payment, access_token: req.body.client_request_id } });
-        }
+        if (online) return await responderCheckout(res, pedido.id, token);
 
         // O pedido já está confirmado no banco. A falha do Socket não pode invalidar a criação nem induzir o cliente a reenviar o pedido.
         try {
@@ -190,6 +209,7 @@ export const criarPedido = async (req, res, next) => {
             status: "success",
             data: {
                 pedido_id: pedido.id,
+                fluxo_pagamento: 'POSTERIOR',
                 total: valorTotalPedido,
                 total_marmitas: deCentavos(totalMarmitasCentavos),
                 total_marmitas_especiais: deCentavos(totalMarmitasEspeciaisCentavos),
