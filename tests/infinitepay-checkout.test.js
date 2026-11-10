@@ -19,7 +19,12 @@ function query(builder) {
     builder.forUpdate = builder.forShare = builder.transacting = () => builder;
     builder.then = (resolve, reject) => Promise.resolve().then(() => {
         const { sql, bindings, method } = builder.toSQL();
-        const statement = store.prepare(sql);
+        // Match PostgreSQL's São Paulo date expressions in this isolated SQLite fixture.
+        const localSql = sql
+            .replaceAll("(data_transacao AT TIME ZONE 'America/Sao_Paulo')::date", "date(data_transacao, '-3 hours')")
+            .replaceAll("(?::date::timestamp AT TIME ZONE 'America/Sao_Paulo')", "strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+3 hours')")
+            .replaceAll("((?::date + 1)::timestamp AT TIME ZONE 'America/Sao_Paulo')", "strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+1 day', '+3 hours')");
+        const statement = store.prepare(localSql);
         const params = bindings.map(value => value === undefined ? null :
             typeof value === 'boolean' ? Number(value) : value && typeof value === 'object' ? JSON.stringify(value) : value);
         if (['select', 'first', 'pluck'].includes(method) || /\breturning\b/i.test(sql)) {
@@ -95,7 +100,7 @@ mock.module('../src/utils/pedidosUtils.js', { namedExports: {
 const { criarPedido, listarPedidosAdmin } = await import('../src/controllers/Pedidos.Controller.js');
 const { listarMetodosDePagamentosAtivos } = await import('../src/controllers/MetodosPagamentos.Controller.js');
 const { default: pagamentos, legacyInfinitepayWebhook } = await import('../src/routes/Pagamentos.Routes.js');
-const { checkoutTokenHash } = await import('../src/services/infinitepayPaymentService.js');
+const { checkoutTokenHash, adminPayments } = await import('../src/services/infinitepayPaymentService.js');
 const browserConfirm = pagamentos.stack.find(layer => layer.route?.path === '/pedidos/:id/confirmar').route.stack.at(-1).handle;
 
 function enabled(ativo) {
@@ -132,7 +137,7 @@ beforeEach(() => {
             status TEXT, valor_centavos INTEGER, credencial_id INTEGER, handle_snapshot TEXT, valid_until TEXT, checkout_payload TEXT,
             checkout_url TEXT, error_code TEXT, transaction_nsu TEXT, invoice_slug TEXT, capture_method TEXT, installments INTEGER,
             valor_base_provider_centavos INTEGER, valor_pago_provider_centavos INTEGER, receipt_url TEXT, provider_verified_at TEXT,
-            pago_em TEXT, last_checked_at TEXT, atualizado_em TEXT DEFAULT CURRENT_TIMESTAMP, provedor TEXT DEFAULT 'INFINITEPAY');
+            pago_em TEXT, criado_em TEXT DEFAULT CURRENT_TIMESTAMP, last_checked_at TEXT, atualizado_em TEXT DEFAULT CURRENT_TIMESTAMP, provedor TEXT DEFAULT 'INFINITEPAY');
         CREATE TABLE logs (tipo TEXT, usuario_id INTEGER, metodo TEXT, endpoint TEXT, acao TEXT, descricao TEXT, payload TEXT);
     `);
     process.env.RENDER_EXTERNAL_URL = 'https://backend.example.invalid';
@@ -312,4 +317,70 @@ test('configuração administrativa ausente ou incompleta bloqueia a tentativa e
     assert.equal(rows('pagamentos').length, 0);
     assert.equal(requests.length, 0);
     assert.deepEqual(notificationIds, []);
+});
+
+async function addFinancialPayment(id, values = {}) {
+    await connection('pedidos').insert({ id, nome_cliente: `Cliente ${id}`, valor_total: 24, metodo_pagamento_id: 1, status: 'Pendente' });
+    await connection('pagamentos').insert({
+        id, pedido_id: id, order_nsu: `order-${id}`, status: 'PAGA', valor_centavos: 2400,
+        criado_em: '2026-11-09T12:00:00.000Z', pago_em: '2026-11-10T12:00:00.000Z',
+        atualizado_em: '2026-11-10T12:00:00.000Z', capture_method: 'pix', ...values,
+    });
+}
+
+test('listagem mantém o total completo do dia nas duas páginas', async () => {
+    for (let id = 1; id <= 21; id++) await addFinancialPayment(id);
+    const first = await adminPayments({ page: 1, limit: 20 });
+    const second = await adminPayments({ page: 2, limit: 20 });
+    assert.equal(first.length, 20);
+    assert.equal(second.length, 1);
+    assert.equal(first[0].total_dia_centavos, 50400);
+    assert.equal(second[0].total_dia_centavos, 50400);
+    assert.equal(first[0].total_registros, 21);
+    assert.equal(first[0].nome_cliente, 'Cliente 21');
+    assert.equal(first[0].pedido_id, 21);
+    assert.equal(first[0].capture_method, 'pix');
+    assert.equal(requests.length, 0);
+});
+
+test('listagem filtra confirmação e criação no dia de São Paulo, com fim inclusivo', async () => {
+    await addFinancialPayment(1, { pago_em: '2026-11-11T02:59:59.000Z' });
+    await addFinancialPayment(2, { status: 'AGUARDANDO', pago_em: null, criado_em: '2026-11-11T03:00:00.000Z' });
+    await addFinancialPayment(3, { pago_em: '2026-11-12T02:59:59.000Z' });
+    await addFinancialPayment(4, { pago_em: '2026-11-12T03:00:00.000Z' });
+    const rows = await adminPayments({ data_inicio: '2026-11-11', data_fim: '2026-11-11' });
+    assert.deepEqual(rows.map(row => row.pagamento_id), [3, 2]);
+    assert.equal(rows[0].total_dia_centavos, 2400);
+    assert.equal(rows[1].total_dia_centavos, 2400);
+    assert.equal(rows[1].pagamento_criado_em, '2026-11-11T03:00:00.000Z');
+});
+
+test('listagem deduplica transações e exclui estornos, cancelados e pendentes do total', async () => {
+    await addFinancialPayment(1, { transaction_nsu: 'same-transaction' });
+    await addFinancialPayment(2, { transaction_nsu: 'same-transaction', status: 'ESTORNADA', atualizado_em: '2026-11-11T12:00:00.000Z' });
+    await addFinancialPayment(3);
+    await addFinancialPayment(4, { status: 'CANCELADA', pago_em: null, criado_em: '2026-11-10T12:00:00.000Z' });
+    await addFinancialPayment(5, { status: 'AGUARDANDO', pago_em: null, criado_em: '2026-11-10T12:00:00.000Z' });
+    const rows = await adminPayments();
+    assert.equal(rows.length, 4);
+    assert.ok(rows.every(row => row.total_dia_centavos === 2400));
+    assert.equal(rows.find(row => row.pagamento_id === 2).status_financeiro, 'ESTORNADA');
+    assert.ok(!rows.some(row => row.pagamento_id === 1));
+    assert.equal(notificationIds.length, 0);
+    assert.equal(requests.length, 0);
+});
+
+test('listagem não inventa data de confirmação ausente', async () => {
+    await addFinancialPayment(1, { pago_em: null });
+    const [row] = await adminPayments();
+    assert.equal(row.pago_em, null);
+    assert.equal(row.data_transacao, null);
+    assert.equal(row.total_dia_centavos, 0);
+});
+
+test('listagem rejeita datas inválidas e período invertido', async () => {
+    for (const query of [
+        { data_inicio: '2026-02-30' }, { data_inicio: ['2026-11-10'] },
+        { data_fim: 'not-a-date' }, { data_inicio: '2026-11-11', data_fim: '2026-11-10' },
+    ]) await assert.rejects(adminPayments(query), error => error.statusCode === 400);
 });

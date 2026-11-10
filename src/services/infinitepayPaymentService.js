@@ -243,8 +243,51 @@ export async function confirmPayment(orderNsu, supplied = {}) {
 export async function adminPayments(query = {}) {
     const page = Math.max(1, Number.parseInt(query.page, 10) || 1);
     const limit = Math.min(100, Math.max(1, Number.parseInt(query.limit, 10) || 50));
-    const rows = await paymentQuery().orderBy('pg.id', 'desc').limit(limit).offset((page - 1) * limit);
-    return rows.map(paymentDto);
+    const dates = ['data_inicio', 'data_fim'].map(key => {
+        const value = query[key];
+        if (value === undefined || value === '') return null;
+        if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value) ||
+            !Number.isFinite(Date.parse(value)) || new Date(value).toISOString().slice(0, 10) !== value) {
+            throw paymentError('Informe um período válido.', 400);
+        }
+        return value;
+    });
+    const [start, end] = dates;
+    if (start && end && start > end) throw paymentError('A data inicial deve ser anterior à data final.', 400);
+
+    // Deduplicate provider transactions before totals and pagination; the latest state wins.
+    const ranked = paymentQuery()
+        .leftJoin('metodos_pagamento as mp', 'mp.id', 'p.metodo_pagamento_id')
+        .select('pg.pago_em', 'pg.criado_em as pagamento_criado_em', 'pg.valor_centavos',
+            'pg.capture_method', 'mp.nome as metodo_selecionado_nome',
+            connection.raw(`CASE WHEN pg.status IN ('PAGA', 'LIQUIDADA', 'ESTORNADA')
+                THEN pg.pago_em ELSE pg.criado_em END AS data_transacao`),
+            connection.raw(`ROW_NUMBER() OVER (
+                PARTITION BY pg.handle_snapshot, COALESCE(NULLIF(pg.transaction_nsu, ''), pg.order_nsu)
+                ORDER BY pg.atualizado_em DESC, pg.id DESC) AS ordem_transacao`));
+    const filtered = connection(ranked.as('transacoes')).select('*').where('ordem_transacao', 1);
+    if (start) filtered.whereRaw("data_transacao >= (?::date::timestamp AT TIME ZONE 'America/Sao_Paulo')", [start]);
+    if (end) filtered.whereRaw("data_transacao < ((?::date + 1)::timestamp AT TIME ZONE 'America/Sao_Paulo')", [end]);
+    const rows = await connection(filtered.as('periodo')).select('*',
+        connection.raw(`SUM(CASE WHEN pagamento_status IN ('PAGA', 'LIQUIDADA') AND pago_em IS NOT NULL
+            THEN valor_centavos ELSE 0 END) OVER (
+            PARTITION BY (data_transacao AT TIME ZONE 'America/Sao_Paulo')::date) AS total_dia_centavos`),
+        connection.raw('COUNT(*) OVER () AS total_registros'))
+        .orderBy('data_transacao', 'desc', 'last').orderBy('pagamento_id', 'desc')
+        .limit(limit).offset((page - 1) * limit);
+    return rows.map(row => ({
+        ...paymentDto(row),
+        pagamento_id: row.pagamento_id,
+        status_financeiro: row.pagamento_status,
+        pago_em: row.pago_em,
+        pagamento_criado_em: row.pagamento_criado_em,
+        data_transacao: row.data_transacao,
+        capture_method: row.capture_method,
+        metodo_pagamento_nome: row.capture_method ? paymentDto(row).metodo_pagamento_nome : row.metodo_selecionado_nome,
+        valor_centavos: Number(row.valor_centavos),
+        total_dia_centavos: Number(row.total_dia_centavos),
+        total_registros: Number(row.total_registros),
+    }));
 }
 
 export async function reconcileOrder(pedidoId, supplied) {
