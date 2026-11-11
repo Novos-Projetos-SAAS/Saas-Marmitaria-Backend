@@ -143,14 +143,16 @@ export const criarPedido = async (req, res, next) => {
             })
             .returning("*");
 
-        const totalMarmitasCentavos = await inserirMarmitasPedido({ pedidoId: pedido.id, marmitas, trx });
+        const checkoutItems = [];
+        const totalMarmitasCentavos = await inserirMarmitasPedido({ pedidoId: pedido.id, marmitas, trx, checkoutItems });
         const totalMarmitasEspeciaisCentavos = await inserirMarmitasEspeciaisPedido({
+            checkoutItems,
             pedidoId: pedido.id,
             marmitasEspeciais: marmitas_especiais,
             trx,
             exigirPrecoReferencia: !req.usuario
         });
-        const totalProdutosCentavos = await inserirProdutosPedido({ pedidoId: pedido.id, produtos, trx, exigirPrecoReferencia: !req.usuario });
+        const totalProdutosCentavos = await inserirProdutosPedido({ pedidoId: pedido.id, produtos, trx, exigirPrecoReferencia: !req.usuario, checkoutItems });
         const valorTotalCentavos = totalMarmitasCentavos + totalMarmitasEspeciaisCentavos + totalProdutosCentavos;
         const valorTotalPedido = deCentavos(valorTotalCentavos);
 
@@ -166,7 +168,7 @@ export const criarPedido = async (req, res, next) => {
             .update({ valor_total: valorTotalPedido });
 
         if (online) {
-            await prepareOnlinePayment(pedido, valorTotalCentavos, trx, config, method);
+            await prepareOnlinePayment(pedido, valorTotalCentavos, trx, config, method, checkoutItems);
         }
 
         await connection("logs")

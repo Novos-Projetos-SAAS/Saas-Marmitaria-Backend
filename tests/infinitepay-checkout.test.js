@@ -30,6 +30,8 @@ function query(builder) {
         if (['select', 'first', 'pluck'].includes(method) || /\breturning\b/i.test(sql)) {
             const rows = statement.all(...params).map(row => ({ ...row,
                 ...(typeof row.ativo === 'number' ? { ativo: Boolean(row.ativo) } : {}),
+                ...(typeof row.disponivel_hoje === 'number' ? { disponivel_hoje: Boolean(row.disponivel_hoje) } : {}),
+                ...(typeof row.categoria_ativa === 'number' ? { categoria_ativa: Boolean(row.categoria_ativa) } : {}),
                 ...(row.checkout_payload ? { checkout_payload: JSON.parse(row.checkout_payload) } : {}) }));
             return method === 'first' ? rows[0] : rows;
         }
@@ -83,7 +85,7 @@ mock.module('../src/utils/pedidosUtils.js', { namedExports: {
     buscarPedidoCompletoPorId: id => connection('pedidos').where({ id }).first(),
     calcularTotalPedido: () => 2400,
     deCentavos: cents => cents / 100,
-    inserirMarmitasPedido: async () => 2400,
+    inserirMarmitasPedido: async ({ checkoutItems }) => { checkoutItems?.push({ description: 'Marmita grande', quantity: 1, price: 2400 }); return 2400; },
     inserirMarmitasEspeciaisPedido: async () => 0,
     inserirProdutosPedido: async () => 0,
     normalizarTelefone: value => value,
@@ -383,4 +385,79 @@ test('listagem rejeita datas inválidas e período invertido', async () => {
         { data_inicio: '2026-02-30' }, { data_inicio: ['2026-11-10'] },
         { data_fim: 'not-a-date' }, { data_inicio: '2026-11-11', data_fim: '2026-11-10' },
     ]) await assert.rejects(adminPayments(query), error => error.statusCode === 400);
+});
+
+test('itens reais preservam tamanhos, composição, especiais e complemento de dez centavos', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { runInNewContext } = await import('node:vm');
+    const source = readFileSync(new URL('../src/utils/pedidosUtils.js', import.meta.url), 'utf8')
+        .replace(/^import .*;$/gm, '').replace(/^export /gm, '');
+    const utils = runInNewContext(source + '\n;({ inserirMarmitasPedido, inserirMarmitasEspeciaisPedido, inserirProdutosPedido })', {
+        connection, lancarErro: (message, statusCode) => { throw Object.assign(new Error(message), { statusCode }); }
+    });
+    store.exec(`
+        CREATE TABLE tamanhos_marmitas(id INTEGER, nome TEXT, preco_base REAL, ativo INTEGER, deletado_em TEXT);
+        INSERT INTO tamanhos_marmitas VALUES(1,'Grande',24,1,NULL),(2,'Pequena',15,1,NULL);
+        CREATE TABLE categorias_alimentos(id INTEGER, nome TEXT, ativo INTEGER, deletado_em TEXT, limite_escolhas INTEGER);
+        INSERT INTO categorias_alimentos VALUES(1,'Principal',1,NULL,2);
+        CREATE TABLE alimentos(id INTEGER,nome TEXT,categoria_id INTEGER,disponivel_hoje INTEGER,deletado_em TEXT);
+        INSERT INTO alimentos VALUES(1,'Arroz',1,1,NULL),(2,'Feijão',1,1,NULL);
+        CREATE TABLE itens_pedido(id INTEGER PRIMARY KEY,pedido_id INTEGER,tamanho_marmita_id INTEGER,produto_id INTEGER,marmita_especial_id INTEGER,quantidade INTEGER,preco_unitario REAL,subtotal REAL,observacao TEXT,nome_item_snapshot TEXT,descricao_item_snapshot TEXT);
+        CREATE TABLE composicao_item_pedido(item_pedido_id INTEGER,alimento_id INTEGER);
+        CREATE TABLE marmitas_especiais(id INTEGER,nome TEXT,descricao TEXT,preco REAL,ativo INTEGER,deletado_em TEXT);
+        INSERT INTO marmitas_especiais VALUES(1,'Feijoada','Especial',30,1,NULL);
+        CREATE TABLE categorias_produtos(id INTEGER,nome TEXT,ativo INTEGER,deletado_em TEXT);
+        INSERT INTO categorias_produtos VALUES(1,'Bebidas',1,NULL);
+        CREATE TABLE produtos(id INTEGER,nome TEXT,preco REAL,ativo INTEGER,disponivel_hoje INTEGER,deletado_em TEXT,categoria_produto_id INTEGER);
+        INSERT INTO produtos VALUES(1,'Coca Cola 350ml',0.10,1,1,NULL,1);
+    `);
+    const checkoutItems = [];
+    const total = await utils.inserirMarmitasPedido({ pedidoId: 1, checkoutItems, marmitas: [
+        { tamanho_id: 1, quantidade: 1, alimentos: [1] },
+        { tamanho_id: 2, quantidade: 1, alimentos: [2] },
+        { tamanho_id: 1, quantidade: 1, alimentos: [2], preco: 0.01, description: 'Forjado' },
+    ] }) + await utils.inserirMarmitasEspeciaisPedido({ pedidoId: 1, checkoutItems,
+        marmitasEspeciais: [{ marmita_especial_id: 1, quantidade: 1 }] }) +
+        await utils.inserirProdutosPedido({ pedidoId: 1, checkoutItems, produtos: [{ produto_id: 1, quantidade: 2 }] });
+    assert.deepEqual(JSON.parse(JSON.stringify(checkoutItems)), [
+        { description: 'Marmita Grande - Arroz', quantity: 1, price: 2400 },
+        { description: 'Marmita Pequena - Feijão', quantity: 1, price: 1500 },
+        { description: 'Marmita Grande - Feijão', quantity: 1, price: 2400 },
+        { description: 'Feijoada', quantity: 1, price: 3000 },
+        { description: 'Coca Cola 350ml', quantity: 2, price: 10 },
+    ]);
+    assert.equal(total, 9320);
+    const { prepareOnlinePayment } = await import('../src/services/infinitepayPaymentService.js');
+    await prepareOnlinePayment({ id: 1, nome_cliente: 'Teste', telefone_cliente: '11999999999' }, total,
+        connection, { ativo: true, credencial_atual_id: 1, handle: 'loja-teste' }, 'pix', checkoutItems);
+    const saved = JSON.parse(rows('pagamentos')[0].checkout_payload);
+    assert.deepEqual(saved.items, JSON.parse(JSON.stringify(checkoutItems)));
+    assert.equal(saved.items.reduce((sum, item) => sum + item.quantity * item.price, 0), total);
+});
+
+test('itens inválidos ou divergentes não persistem cobrança nem chamam o provedor', async () => {
+    const { prepareOnlinePayment } = await import('../src/services/infinitepayPaymentService.js');
+    for (const items of [[], [{ quantity: 1, price: 2399, description: 'Item' }],
+        [{ quantity: 1.5, price: 1600, description: 'Item' }], [{ quantity: 1, price: NaN, description: 'Item' }],
+        [{ quantity: 1, price: 2400, description: '' }], [{ quantity: -1, price: -2400, description: 'Item' }]]) {
+        await assert.rejects(prepareOnlinePayment({ id: 1 }, 2400, connection,
+            { ativo: true, credencial_atual_id: 1, handle: 'loja-teste' }, 'pix', items), error => error.statusCode === 400);
+    }
+    assert.equal(rows('pagamentos').length, 0);
+    assert.equal(requests.length, 0);
+});
+
+test('recuperação reenvia o payload persistido sem reconstruir itens nem duplicar cobrança', async () => {
+    provider = () => { throw new Error('Falha simulada'); };
+    const input = orderBody(1);
+    await post(input);
+    const original = JSON.parse(rows('pagamentos')[0].checkout_payload);
+    const { checkoutForOrder } = await import('../src/services/infinitepayPaymentService.js');
+    provider = () => ({ url: 'https://checkout.infinitepay.io/recuperado' });
+    await checkoutForOrder(rows('pedidos')[0].id, { recover: true });
+    assert.deepEqual(requests.at(-1).payload, original);
+    const count = requests.length;
+    await checkoutForOrder(rows('pedidos')[0].id, { recover: true });
+    assert.equal(requests.length, count);
+    assert.equal(rows('pagamentos').length, 1);
 });

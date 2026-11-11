@@ -64,16 +64,24 @@ async function requireOnlineConfiguration(db, config) {
     }
 }
 
-export async function prepareOnlinePayment(pedido, valorCentavos, db, config, method) {
+export async function prepareOnlinePayment(pedido, valorCentavos, db, config, method, items) {
     const { webhook, redirect } = await requireOnlineConfiguration(db, config);
     if (!Number.isSafeInteger(valorCentavos) || valorCentavos < 100) {
         throw paymentError('O pagamento online deve ser de pelo menos R$ 1,00.', 400);
+    }
+    if (!Array.isArray(items) || !items.length || items.some(item =>
+        !Number.isSafeInteger(item.quantity) || item.quantity <= 0 ||
+        !Number.isSafeInteger(item.price) || item.price <= 0 ||
+        typeof item.description !== 'string' || !item.description.trim()) ||
+        !Number.isSafeInteger(items.reduce((sum, item) => sum + item.quantity * item.price, 0)) ||
+        items.reduce((sum, item) => sum + item.quantity * item.price, 0) !== valorCentavos) {
+        throw paymentError('Itens do checkout inválidos ou divergentes do total do pedido.', 400);
     }
     const orderNsu = `pedido-${pedido.id}-${randomUUID()}`;
     const validUntil = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     const payload = {
         handle: config.handle, order_nsu: orderNsu,
-        items: [{ quantity: 1, price: valorCentavos, description: `Pedido #${pedido.id} — Marmitaria` }],
+        items: items.map(({ description, quantity, price }) => ({ description, quantity, price })),
         customer: { name: String(pedido.nome_cliente).trim(), phone_number: `+55${pedido.telefone_cliente}` },
         webhook_url: webhook, redirect_url: redirect,
         options: { assured_installments: config.assured_installments, single_payment: true,

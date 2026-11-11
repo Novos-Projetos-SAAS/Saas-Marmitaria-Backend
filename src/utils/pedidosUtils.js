@@ -1349,7 +1349,7 @@ async function validarAlimentosDaMarmita(alimentos, trx) {
         }
     }
 
-    return { alimentosIds, indisponiveis: [] };
+    return { alimentosIds, nomes: alimentosIds.map(id => alimentosPorId.get(id).nome), indisponiveis: [] };
 }
 
 /**
@@ -1360,7 +1360,7 @@ async function validarAlimentosDaMarmita(alimentos, trx) {
  * 
  * @returns total das marmitas em centavos
  */
-export async function inserirMarmitasPedido({ pedidoId, marmitas, trx }) {
+export async function inserirMarmitasPedido({ pedidoId, marmitas, trx, checkoutItems }) {
     let totalCentavos = 0;
     const marmitasPreparadas = [];
     const marmitasIndisponiveis = [];
@@ -1400,6 +1400,7 @@ export async function inserirMarmitasPedido({ pedidoId, marmitas, trx }) {
 
         marmitasPreparadas.push({
             tamanhoId,
+            description: `Marmita ${tamanho.nome} - ${validacaoAlimentos.nomes?.join(', ') || ''}`,
             quantidade,
             observacao,
             alimentosIds: validacaoAlimentos.alimentosIds,
@@ -1434,6 +1435,7 @@ export async function inserirMarmitasPedido({ pedidoId, marmitas, trx }) {
         }));
 
         await connection('composicao_item_pedido').transacting(trx).insert(composicao);
+        checkoutItems?.push({ description: marmita.description, quantity: marmita.quantidade, price: marmita.precoUnitarioCentavos });
         totalCentavos += subtotalCentavos;
     }
 
@@ -1512,6 +1514,7 @@ function agruparMarmitasEspeciais(marmitasEspeciais, exigirPrecoReferencia = fal
 export async function inserirMarmitasEspeciaisPedido({
     pedidoId,
     marmitasEspeciais,
+    checkoutItems,
     trx,
     exigirPrecoReferencia = false
 }) {
@@ -1612,6 +1615,7 @@ export async function inserirMarmitasEspeciaisPedido({
                 nome_item_snapshot: marmita.nome,
                 descricao_item_snapshot: marmita.descricao || null
             });
+        checkoutItems?.push({ description: marmita.nome, quantity: item.quantidade, price: precoUnitarioCentavos });
 
         totalCentavos += subtotalCentavos;
     }
@@ -1685,7 +1689,7 @@ function agruparProdutos(produtos, exigirPrecoReferencia = false) {
  * INSERIR PRODUTOS
  * ============================================================
  */
-export async function inserirProdutosPedido({ pedidoId, produtos, trx, exigirPrecoReferencia = false }) {
+export async function inserirProdutosPedido({ pedidoId, produtos, trx, exigirPrecoReferencia = false, checkoutItems }) {
     if (!Array.isArray(produtos)) {
         lancarErro('Produtos deve ser uma lista.', 400);
     }
@@ -1845,6 +1849,7 @@ export async function inserirProdutosPedido({ pedidoId, produtos, trx, exigirPre
                 preco_unitario: deCentavos(precoUnitarioCentavos),
                 subtotal: deCentavos(subtotalCentavos)
             });
+        checkoutItems?.push({ description: produto.nome, quantity: item.quantidade, price: precoUnitarioCentavos });
 
         totalCentavos += subtotalCentavos;
     }
