@@ -166,9 +166,13 @@ afterEach(() => {
 async function invoke(handler, req = {}) {
     let code = 200;
     let body;
-    const res = { set() { return this; }, status(value) { code = value; return this; }, json(value) { body = value; return this; } };
+    const cookies = [];
+    const res = {
+        set() { return this; }, status(value) { code = value; return this; }, json(value) { body = value; return this; },
+        cookie(name, value, options) { cookies.push({ name, value, options }); return this; }
+    };
     await handler(req, res, error => { throw error; });
-    return { code, body };
+    return { code, body, cookies };
 }
 
 function orderBody(method, token = randomUUID()) {
@@ -193,6 +197,11 @@ for (const active of [true, false]) {
             assert.equal(rows('pedidos')[0].metodo_pagamento_id, method);
             assert.equal(rows('pedidos')[0].checkout_token_hash, checkoutTokenHash(input.client_request_id));
             assert.equal(data.fluxo_pagamento, active ? 'INFINITEPAY' : 'POSTERIOR');
+            assert.equal(data.access_token, input.client_request_id);
+            assert.equal(response.cookies[0].name, `marmitaria_pedido_${data.pedido_id}`);
+            assert.equal(response.cookies[0].value, input.client_request_id);
+            assert.equal(response.cookies[0].options.httpOnly, true);
+            assert.equal(response.cookies[0].options.path, `/pedidos/detalhes/${data.pedido_id}`);
             assert.equal(rows('pagamentos').length, active ? 1 : 0);
             assert.equal(requests.length, active ? 1 : 0);
             if (active) {

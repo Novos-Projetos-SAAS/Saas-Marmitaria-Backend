@@ -1,4 +1,7 @@
 import connection from "../database/connection.js";
+import { randomUUID } from 'node:crypto';
+import { listCustomerOrders, readCustomerOrder } from '../services/customerOrderService.js';
+import { orderCookieName, rememberOrderAccess } from '../middlewares/customerOrderAccess.js';
 import { checkoutForOrder, checkoutTokenHash, infinitepayMethod, paymentError, prepareOnlinePayment } from "../services/infinitepayPaymentService.js";
 import { getInfinitepayConfig } from "../services/infinitepayConfigService.js";
 import { lancarErro } from "../utils/errorUtils.js";
@@ -16,9 +19,10 @@ import {
     validarMetodoPagamento
 } from "../utils/pedidosUtils.js";
 
-async function responderCheckout(res, pedidoId, token, reused = false) {
+async function responderCheckout(req, res, pedidoId, token, reused = false) {
     const payment = await checkoutForOrder(pedidoId);
     const statusCode = payment.checkout_url ? (reused ? 200 : 201) : 202;
+    rememberOrderAccess(req, res, pedidoId, token);
     return res.status(statusCode).json({
         status: 'success', data: {
             ...payment, fluxo_pagamento: 'INFINITEPAY', access_token: token, ...(reused ? { reused } : {})
@@ -30,8 +34,8 @@ export const criarPedido = async (req, res, next) => {
     let trx;
 
     try {
-        const token = req.usuario ? undefined : req.body?.client_request_id;
-        const tokenHash = token === undefined ? null : checkoutTokenHash(token);
+        let token = req.usuario ? undefined : req.body?.client_request_id;
+        let tokenHash = token === undefined ? null : checkoutTokenHash(token);
         if (tokenHash) {
             trx = await connection.transaction();
             res.set('Cache-Control', 'no-store');
@@ -41,11 +45,12 @@ export const criarPedido = async (req, res, next) => {
             if (existing) {
                 await trx.commit();
                 if (existing.fluxo_pagamento === 'INFINITEPAY') {
-                    return await responderCheckout(res, existing.id, token, true);
+                    return await responderCheckout(req, res, existing.id, token, true);
                 }
+                rememberOrderAccess(req, res, existing.id, token);
                 return res.status(200).json({
                     status: 'success', data: {
-                        pedido_id: existing.id, total: Number(existing.valor_total), fluxo_pagamento: 'POSTERIOR', reused: true
+                        pedido_id: existing.id, total: Number(existing.valor_total), fluxo_pagamento: 'POSTERIOR', access_token: token, reused: true
                     }
                 });
             }
@@ -127,6 +132,11 @@ export const criarPedido = async (req, res, next) => {
         }
         const online = config?.ativo === true;
         if (online && !tokenHash) throw paymentError('Identificador de checkout obrigatório.', 400);
+        if (!req.usuario && !tokenHash) {
+            token = randomUUID();
+            tokenHash = checkoutTokenHash(token);
+        }
+        if (tokenHash) res.set('Cache-Control', 'private, no-store');
 
         const [pedido] = await connection("pedidos")
             .transacting(trx)
@@ -198,7 +208,7 @@ export const criarPedido = async (req, res, next) => {
 
         await trx.commit();
 
-        if (online) return await responderCheckout(res, pedido.id, token);
+        if (online) return await responderCheckout(req, res, pedido.id, token);
 
         // O pedido já está confirmado no banco. A falha do Socket não pode invalidar a criação nem induzir o cliente a reenviar o pedido.
         try {
@@ -211,10 +221,12 @@ export const criarPedido = async (req, res, next) => {
             console.error(`Erro ao emitir o pedido #${pedido.id} pelo Socket.IO:`, socketError);
         }
 
+        if (tokenHash) rememberOrderAccess(req, res, pedido.id, token);
         return res.status(201).json({
             status: "success",
             data: {
                 pedido_id: pedido.id,
+                ...(tokenHash ? { access_token: token } : {}),
                 fluxo_pagamento: 'POSTERIOR',
                 total: valorTotalPedido,
                 total_marmitas: deCentavos(totalMarmitasCentavos),
@@ -660,101 +672,19 @@ export const listarPedidosAdmin = async (req, res, next) => {
 
 export const listarPedidosPorTelefoneUsuario = async (req, res, next) => {
     try {
-        res.set('Cache-Control', 'no-store');
-
         const telefone = normalizarTelefone(req.params.telefone);
 
-        const pedidos = await connection('pedidos')
-            .select(
-                'pedidos.id',
-                'pedidos.nome_cliente',
-                'pedidos.status',
-                'pedidos.valor_total',
-                'pedidos.metodo_pagamento_id',
-                'pedidos.metodo_entrega',
-                'pedidos.endereco_cliente',
-                'pedidos.observacoes',
-                'pedidos.precisa_troco',
-                'pedidos.troco_para',
-                'pedidos.criado_em',
-                'pedidos.fluxo_pagamento',
-
-                // Estado financeiro da tentativa mais recente.
-                connection.raw(`
-                    (
-                        SELECT CASE
-                            WHEN pg.status IN ('PAGA', 'LIQUIDADA')
-                                 AND pg.provider_verified_at IS NOT NULL
-                                THEN 'PAGO'
-
-                            WHEN pg.status IN (
-                                'CANCELADA', 'EXPIRADA', 'ESTORNADA'
-                            )
-                                THEN 'CANCELADO'
-
-                            WHEN pg.status IN ('FALHOU', 'DIVERGENTE')
-                                THEN 'FALHOU'
-
-                            ELSE 'PENDENTE'
-                        END
-                        FROM pagamentos pg
-                        WHERE pg.pedido_id = pedidos.id
-                          AND pg.provedor = 'INFINITEPAY'
-                        ORDER BY pg.tentativa_numero DESC, pg.id DESC
-                        LIMIT 1
-                    ) AS pagamento_status
-                `),
-
-                // Apenas informa que existe recibo.
-                // Não expõe receipt_url na busca por telefone.
-                connection.raw(`
-                    COALESCE((
-                        SELECT (
-                            pg.status IN ('PAGA', 'LIQUIDADA')
-                            AND pg.provider_verified_at IS NOT NULL
-                            AND NULLIF(BTRIM(pg.receipt_url), '') IS NOT NULL
-                        )
-                        FROM pagamentos pg
-                        WHERE pg.pedido_id = pedidos.id
-                          AND pg.provedor = 'INFINITEPAY'
-                        ORDER BY pg.tentativa_numero DESC, pg.id DESC
-                        LIMIT 1
-                    ), false) AS comprovante_disponivel
-                `),
-
-                connection.raw(`
-                    (
-                        SELECT CASE
-                            WHEN pg.status IN ('PAGA', 'LIQUIDADA')
-                                AND pg.provider_verified_at IS NOT NULL
-                                AND NULLIF(BTRIM(pg.receipt_url), '') IS NOT NULL
-                            THEN pg.receipt_url
-                            ELSE NULL
-                        END
-                        FROM pagamentos pg
-                        WHERE pg.pedido_id = pedidos.id
-                        AND pg.provedor = 'INFINITEPAY'
-                        ORDER BY pg.tentativa_numero DESC, pg.id DESC
-                        LIMIT 1
-                    ) AS comprovante_url
-                `),
-
-                selecionarMarmitasJson(),
-                selecionarProdutosJson()
-            )
-            .where('pedidos.telefone_cliente', telefone)
-            .whereNull('pedidos.deletado_em')
-            .orderBy('pedidos.criado_em', 'desc');
+        const pedidos = await listCustomerOrders(telefone);
 
         if (pedidos.length === 0) {
             return res.status(404).json({
-                status: 'error',
-                message: 'Nenhum pedido encontrado para este número de telefone.'
+                status: "error",
+                message: "Nenhum pedido encontrado para este número de telefone."
             });
         }
 
         return res.status(200).json({
-            status: 'success',
+            status: "success",
             results: pedidos.length,
             data: pedidos
         });
@@ -763,6 +693,17 @@ export const listarPedidosPorTelefoneUsuario = async (req, res, next) => {
     }
 };
 
+export const detalharPedidoCliente = async (req, res, next) => {
+    try {
+        const id = Number(req.params.id);
+        if (!Number.isInteger(id) || id <= 0 || id > 2147483647) throw paymentError('Pedido inválido.', 400);
+        const header = req.get('Authorization') || '';
+        const token = header.startsWith('Bearer ') ? header.slice(7) : req.cookies?.[orderCookieName(id)];
+        const pedido = await readCustomerOrder(id, token);
+        rememberOrderAccess(req, res, id, token);
+        res.json({ status: 'success', data: pedido });
+    } catch (error) { next(error); }
+};
 
 export const deletarPedido = async (req, res, next) => {
     let trx;

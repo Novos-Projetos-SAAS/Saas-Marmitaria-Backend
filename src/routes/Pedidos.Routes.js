@@ -1,9 +1,12 @@
 import { Router } from "express";
+import rateLimit from 'express-rate-limit';
+import { privateOrderResponse } from '../middlewares/customerOrderAccess.js';
 
 import {
     alterarStatusPedido,
     criarPedido,
     deletarPedido,
+    detalharPedidoCliente,
     editarPedido,
     listarPedidosAdmin,
     listarPedidosPorTelefoneUsuario,
@@ -14,6 +17,8 @@ import { checkPermission } from "../middlewares/checkPermission.js";
 import { limitadorPagamentoPublico } from "../middlewares/rateLimiter.js";
 
 const router = Router();
+const customerLimit = rateLimit({ windowMs: 60000, limit: 30, standardHeaders: true, legacyHeaders: false,
+    message: { status: 'fail', message: 'Aguarde um minuto antes de consultar novamente.' } });
 
 /**
  * @swagger
@@ -124,7 +129,8 @@ router.post('/', limitadorPagamentoPublico, criarPedido)
  *               status: "error"
  *               message: "Nenhum pedido encontrado para este telefone."
  */
-router.get('/rastreio/:telefone', listarPedidosPorTelefoneUsuario)
+router.get('/rastreio/:telefone', privateOrderResponse, customerLimit, listarPedidosPorTelefoneUsuario)
+router.get('/detalhes/:id', privateOrderResponse, customerLimit, detalharPedidoCliente)
 
 router.use(verifyToken)
 

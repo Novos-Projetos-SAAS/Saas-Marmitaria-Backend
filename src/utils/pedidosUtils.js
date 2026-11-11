@@ -1888,6 +1888,7 @@ export function selecionarMarmitasJson() {
                         ip.tamanho_marmita_id,
                         NULL::integer AS marmita_especial_id,
                         tm.nome::text AS tamanho,
+                        COALESCE(to_jsonb(tm)->>'imagem_url', to_jsonb(tm)->>'foto_url', to_jsonb(tm)->>'image_url') AS imagem_url,
                         NULL::text AS nome,
                         NULL::text AS descricao,
                         ip.quantidade,
@@ -1909,7 +1910,7 @@ export function selecionarMarmitasJson() {
                             '[]'::json
                         ) AS alimentos
                     FROM itens_pedido AS ip
-                    JOIN tamanhos_marmitas AS tm ON tm.id = ip.tamanho_marmita_id
+                    LEFT JOIN tamanhos_marmitas AS tm ON tm.id = ip.tamanho_marmita_id
                     WHERE ip.pedido_id = pedidos.id
                       AND ip.tamanho_marmita_id IS NOT NULL
                       AND ip.produto_id IS NULL
@@ -1923,6 +1924,7 @@ export function selecionarMarmitasJson() {
                         NULL::integer AS tamanho_marmita_id,
                         ip.marmita_especial_id,
                         NULL::text AS tamanho,
+                        COALESCE(to_jsonb(me)->>'imagem_url', to_jsonb(me)->>'foto_url', to_jsonb(me)->>'image_url') AS imagem_url,
                         COALESCE(ip.nome_item_snapshot, me.nome)::text AS nome,
                         COALESCE(ip.descricao_item_snapshot, me.descricao)::text AS descricao,
                         ip.quantidade,
@@ -1959,14 +1961,16 @@ export function selecionarProdutosJson() {
                         ip.produto_id,
                         p.nome,
                         p.descricao,
+                        COALESCE(to_jsonb(p)->>'imagem_url', to_jsonb(p)->>'foto_url', to_jsonb(p)->>'image_url') AS imagem_url,
                         p.categoria_produto_id AS categoria_id,
                         cp.nome AS categoria_nome,
                         ip.quantidade,
                         ip.preco_unitario,
-                        ip.subtotal
+                        ip.subtotal,
+                        ip.observacao
                     FROM itens_pedido AS ip
-                    JOIN produtos AS p ON p.id = ip.produto_id
-                    JOIN categorias_produtos AS cp ON cp.id = p.categoria_produto_id
+                    LEFT JOIN produtos AS p ON p.id = ip.produto_id
+                    LEFT JOIN categorias_produtos AS cp ON cp.id = p.categoria_produto_id
                     WHERE ip.pedido_id = pedidos.id
                       AND ip.produto_id IS NOT NULL
                       AND ip.tamanho_marmita_id IS NULL

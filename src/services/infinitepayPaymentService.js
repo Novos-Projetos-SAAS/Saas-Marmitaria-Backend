@@ -147,7 +147,7 @@ async function providerRequest(endpoint, apiKey, body) {
     }
 }
 
-function trustedProviderUrl(value, kind) {
+export function trustedProviderUrl(value, kind) {
     if (typeof value !== 'string' || !value) return null;
 
     try {
@@ -185,16 +185,19 @@ export function paymentStatus(status) {
 }
 
 function paymentDto(row) {
+    const status = PAID.includes(row.pagamento_status) && !row.provider_verified_at
+        ? 'PENDENTE' : paymentStatus(row.pagamento_status);
+    const valid = new Date(row.valid_until).getTime() > Date.now();
     return {
         pedido_id: row.pedido_id,
         order_nsu: row.order_nsu,
-        checkout_url: row.status === 'Cancelado' || paymentStatus(row.pagamento_status) !== 'PENDENTE' ? null : row.checkout_url,
-        pagamento_status: paymentStatus(row.pagamento_status),
+        checkout_url: row.status === 'Cancelado' || status !== 'PENDENTE' || !valid ? null : trustedProviderUrl(row.checkout_url, 'checkout'),
+        pagamento_status: status, valid_until: row.valid_until,
         valor_total: Number(row.valor_total),
         status: row.status, nome_cliente: row.nome_cliente, criado_em: row.criado_em,
         transaction_nsu: row.transaction_nsu, invoice_slug: row.invoice_slug,
         metodo_pagamento_nome: row.capture_method === 'pix' ? 'Pix (InfinitePay)' : row.capture_method === 'credit_card' ? 'Cartão (InfinitePay)' : 'InfinitePay',
-        receipt_url: trustedProviderUrl(row.receipt_url, 'receipt'),
+        receipt_url: status === 'PAGO' ? trustedProviderUrl(row.receipt_url, 'receipt') : null,
         ...(row.error_code === 'CHECKOUT_INCERTO' ? {
             checkout_error: 'A geração do link não foi concluída. O pedido foi salvo e aguarda conciliação pela loja.'
         } : {})
@@ -208,6 +211,7 @@ function paymentQuery() {
             'pg.id as pagamento_id', 'pg.pedido_id', 'pg.order_nsu', 'pg.checkout_url',
             'pg.status as pagamento_status', 'pg.transaction_nsu', 'pg.invoice_slug',
             'pg.capture_method', 'pg.receipt_url', 'pg.error_code',
+            'pg.valid_until', 'pg.provider_verified_at',
             'p.valor_total', 'p.status', 'p.nome_cliente', 'p.criado_em'
         )
         .where('pg.provedor', 'INFINITEPAY');
