@@ -642,12 +642,25 @@ export const listarPedidosAdmin = async (req, res, next) => {
 
         const pedidos = await baseQuery.clone()
             .leftJoin("metodos_pagamento", "pedidos.metodo_pagamento_id", "=", "metodos_pagamento.id")
+
             .select(
                 "pedidos.*",
                 "metodos_pagamento.nome as metodo_pagamento_nome",
                 selecionarMarmitasJson(),
-                selecionarProdutosJson()
+                selecionarProdutosJson(),
+                connection.raw(`
+                EXISTS (
+                    SELECT 1
+                    FROM pagamentos pg
+                    WHERE pg.pedido_id = pedidos.id
+                    AND pg.provedor = 'INFINITEPAY'
+                    AND pg.status IN ('PAGA', 'LIQUIDADA')
+                    AND pg.provider_verified_at IS NOT NULL
+                    AND NULLIF(BTRIM(pg.receipt_url), '') IS NOT NULL
+                ) AS comprovante_disponivel
+            `)
             )
+
             .orderBy("pedidos.criado_em", "desc")
             .limit(porPagina)
             .offset(offset);
@@ -693,17 +706,38 @@ export const listarPedidosPorTelefoneUsuario = async (req, res, next) => {
     }
 };
 
+
 export const detalharPedidoCliente = async (req, res, next) => {
     try {
         const id = Number(req.params.id);
-        if (!Number.isInteger(id) || id <= 0 || id > 2147483647) throw paymentError('Pedido inválido.', 400);
-        const header = req.get('Authorization') || '';
-        const token = header.startsWith('Bearer ') ? header.slice(7) : req.cookies?.[orderCookieName(id)];
-        const pedido = await readCustomerOrder(id, token);
+        if (!Number.isInteger(id) || id <= 0 || id > 2147483647) {
+            throw paymentError('Pedido inválido.', 400);
+        }
+
+        const auth = req.get('Authorization') || '';
+        const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+        const cookie = req.cookies?.[orderCookieName(id)] || null;
+        let token = bearer || cookie;
+        let pedido;
+
+        try {
+            pedido = await readCustomerOrder(id, token);
+        } catch (error) {
+            if (error.statusCode !== 404 || !bearer || !cookie || bearer === cookie) {
+                throw error;
+            }
+
+            token = cookie;
+            pedido = await readCustomerOrder(id, token);
+        }
+
         rememberOrderAccess(req, res, id, token);
         res.json({ status: 'success', data: pedido });
-    } catch (error) { next(error); }
+    } catch (error) {
+        next(error);
+    }
 };
+
 
 export const deletarPedido = async (req, res, next) => {
     let trx;

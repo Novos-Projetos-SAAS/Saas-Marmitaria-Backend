@@ -6,6 +6,10 @@ import { checkPermission } from '../middlewares/checkPermission.js';
 import { csrfToken, protectInfinitepayWrite, requireActiveFinancialUser } from '../middlewares/infinitepayAdminSecurity.js';
 import { adminPayments, confirmPayment, ownedPayment, paymentError, reconcileOrder } from '../services/infinitepayPaymentService.js';
 
+import connection from '../database/connection.js';
+import { trustedProviderUrl } from '../services/infinitepayPaymentService.js';
+
+
 const router = Router();
 const asyncRoute = action => async (req, res, next) => {
     res.set('Cache-Control', 'no-store');
@@ -59,6 +63,23 @@ router.get('/admin', checkPermission(['pagamentos.visualizar', 'pagamentos.conci
 router.post('/admin/:id/conciliar', checkPermission('pagamentos.conciliar'), protectInfinitepayWrite, asyncRoute(async (req, res) => {
     res.json({ status: 'success', data: await reconcileOrder(orderId(req), req.body || {}) });
 }));
+
+router.get('/admin/pedidos/:id/comprovante',
+    checkPermission(['pagamentos.visualizar', 'pagamentos.conciliar']),
+    asyncRoute(async (req, res) => {
+        const pedidoId = orderId(req);
+        const pagamento = await connection('pagamentos')
+            .where({ pedido_id: pedidoId, provedor: 'INFINITEPAY' })
+            .whereIn('status', ['PAGA', 'LIQUIDADA'])
+            .whereNotNull('provider_verified_at')
+            .whereNotNull('receipt_url')
+            .orderBy('tentativa_numero', 'desc')
+            .first('receipt_url');
+        const receiptUrl = trustedProviderUrl(pagamento?.receipt_url, 'receipt');
+        if (!receiptUrl) throw paymentError('Comprovante indisponível.', 404); res.json({ status: 'success', data: { receipt_url: receiptUrl } });
+    })
+);
+
 
 // Keep the former provider callback path functional without reinstating its workers.
 export const legacyInfinitepayWebhook = webhook;
