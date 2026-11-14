@@ -126,6 +126,7 @@ beforeEach(() => {
     notificationIds = [];
     requests = [];
     store = new DatabaseSync(':memory:');
+    store.function('btrim', value => value === null ? null : value.replace(/^ +| +$/g, ''));
     store.exec(`
         CREATE TABLE metodos_pagamento (id INTEGER PRIMARY KEY, nome TEXT, codigo TEXT, tipo_financeiro TEXT, ativo INTEGER, deletado_em TEXT);
         INSERT INTO metodos_pagamento VALUES (1, 'Pix', NULL, 'OUTRO', 1, NULL),
