@@ -12,6 +12,7 @@ export async function getInfinitepayConfig(db = connection, { lock = false } = {
 
 export function publicConfig(config) {
     return { handle: config.handle, ativo: config.ativo, assured_installments: config.assured_installments,
+        pix_habilitado: config.pix_habilitado, credito_habilitado: config.credito_habilitado,
         has_api_key: config.credencial_atual_id !== null };
 }
 
@@ -31,7 +32,10 @@ function validateObject(input, allowed) {
 }
 
 export async function updateInfinitepayConfig(input, db = connection) {
-    validateObject(input, ['handle', 'api_key', 'assured_installments']);
+    validateObject(input, ['handle', 'api_key', 'assured_installments', 'pix_habilitado', 'credito_habilitado']);
+    for (const field of ['pix_habilitado', 'credito_habilitado']) {
+        if (Object.hasOwn(input, field) && typeof input[field] !== 'boolean') lancarErro('Preferência de pagamento inválida.', 400);
+    }
     let handle;
     if (input.handle !== undefined) {
         if (typeof input.handle !== 'string') lancarErro('InfiniteTag inválida.', 400);
@@ -59,6 +63,8 @@ export async function updateInfinitepayConfig(input, db = connection) {
         }
         const [saved] = await trx('config_infinitepay').where({ id: 1 }).update({ handle: nextHandle,
             credencial_atual_id: credentialId, assured_installments: input.assured_installments ?? current.assured_installments,
+            pix_habilitado: input.pix_habilitado ?? current.pix_habilitado,
+            credito_habilitado: input.credito_habilitado ?? current.credito_habilitado,
             atualizado_em: trx.fn.now() }).returning('*');
         return publicConfig(saved);
     });

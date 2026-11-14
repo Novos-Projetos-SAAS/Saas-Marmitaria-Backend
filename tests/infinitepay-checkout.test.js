@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, mock, test } from 'node:test';
 import knex from 'knex';
+import jwt from 'jsonwebtoken';
 
 const sqlBuilder = knex({ client: 'pg' });
 let store;
@@ -30,6 +31,8 @@ function query(builder) {
         if (['select', 'first', 'pluck'].includes(method) || /\breturning\b/i.test(sql)) {
             const rows = statement.all(...params).map(row => ({ ...row,
                 ...(typeof row.ativo === 'number' ? { ativo: Boolean(row.ativo) } : {}),
+                ...(typeof row.pix_habilitado === 'number' ? { pix_habilitado: Boolean(row.pix_habilitado) } : {}),
+                ...(typeof row.credito_habilitado === 'number' ? { credito_habilitado: Boolean(row.credito_habilitado) } : {}),
                 ...(typeof row.disponivel_hoje === 'number' ? { disponivel_hoje: Boolean(row.disponivel_hoje) } : {}),
                 ...(typeof row.categoria_ativa === 'number' ? { categoria_ativa: Boolean(row.categoria_ativa) } : {}),
                 ...(row.checkout_payload ? { checkout_payload: JSON.parse(row.checkout_payload) } : {}) }));
@@ -104,6 +107,9 @@ const { listarMetodosDePagamentosAtivos } = await import('../src/controllers/Met
 const { default: pagamentos, legacyInfinitepayWebhook } = await import('../src/routes/Pagamentos.Routes.js');
 const { checkoutTokenHash, adminPayments } = await import('../src/services/infinitepayPaymentService.js');
 const browserConfirm = pagamentos.stack.find(layer => layer.route?.path === '/pedidos/:id/confirmar').route.stack.at(-1).handle;
+const { default: configRoutes } = await import('../src/routes/InfinitepayConfig.Routes.js');
+const { readPublicConfig, updateInfinitepayConfig } = await import('../src/services/infinitepayConfigService.js');
+const { csrfToken } = await import('../src/middlewares/infinitepayAdminSecurity.js');
 
 function enabled(ativo) {
     // SQLite stores booleans as integers; normalize this row the same way pg does.
@@ -127,8 +133,17 @@ beforeEach(() => {
             (4, 'Cartão na entrega', 'CREDITO_ENTREGA', 'CREDITO', 1, NULL),
             (5, 'InfinitePay (Pix ou cartão)', 'INFINITEPAY', 'OUTRO', 1, NULL),
             (6, 'Cartão de Débito', 'CARTAO_DEBITO', 'DEBITO', 1, NULL);
-        CREATE TABLE config_infinitepay (id INTEGER PRIMARY KEY, ativo INTEGER, credencial_atual_id INTEGER, handle TEXT, assured_installments INTEGER);
-        INSERT INTO config_infinitepay VALUES (1, 1, 1, 'loja-teste', 1);
+        CREATE TABLE config_infinitepay (id INTEGER PRIMARY KEY, ativo INTEGER, credencial_atual_id INTEGER, handle TEXT, assured_installments INTEGER,
+            pix_habilitado INTEGER NOT NULL DEFAULT 1, credito_habilitado INTEGER NOT NULL DEFAULT 1, atualizado_em TEXT);
+        INSERT INTO config_infinitepay (id, ativo, credencial_atual_id, handle, assured_installments) VALUES (1, 1, 1, 'loja-teste', 1);
+        CREATE TABLE niveis_acesso (id INTEGER PRIMARY KEY, nome TEXT, ativo INTEGER);
+        INSERT INTO niveis_acesso VALUES (1, 'operador', 1);
+        CREATE TABLE usuarios (id INTEGER PRIMARY KEY, nivel_acesso_id INTEGER, ativo INTEGER, deletado_em TEXT);
+        INSERT INTO usuarios VALUES (1, 1, 1, NULL);
+        CREATE TABLE permissoes (id INTEGER PRIMARY KEY, nome TEXT);
+        INSERT INTO permissoes VALUES (1, 'pagamentos.visualizar'), (2, 'pagamentos.configurar'), (3, 'pagamentos.ativar');
+        CREATE TABLE permissoes_usuarios (usuario_id INTEGER, permissao_id INTEGER);
+        INSERT INTO permissoes_usuarios VALUES (1, 1);
         CREATE TABLE infinitepay_credenciais (id INTEGER PRIMARY KEY, handle TEXT);
         INSERT INTO infinitepay_credenciais VALUES (1, 'loja-teste');
         CREATE TABLE pedidos (id INTEGER PRIMARY KEY, nome_cliente TEXT, telefone_cliente TEXT, endereco_cliente TEXT,
@@ -215,6 +230,103 @@ for (const active of [true, false]) {
         });
     }
 }
+
+for (const pix of [true, false]) for (const credit of [true, false]) for (const method of [1, 2]) {
+    test(`preferências Pix=${pix} crédito=${credit}, modalidade=${method}`, async () => {
+        store.prepare('UPDATE config_infinitepay SET pix_habilitado = ?, credito_habilitado = ?').run(+pix, +credit);
+        const online = method === 1 ? pix : credit;
+        const result = await post(orderBody(method));
+        assert.equal(result.body.data.fluxo_pagamento, online ? 'INFINITEPAY' : 'POSTERIOR');
+        assert.equal(rows('pagamentos').length, online ? 1 : 0);
+        assert.equal(requests.length, online ? 1 : 0);
+        assert.equal((await kitchen()).length, online ? 0 : 1);
+        assert.equal(notificationIds.length, online ? 0 : 1);
+    });
+}
+
+test('preferências mudam só pedidos novos e pagamento oficial com cartão confirma Pix uma única vez', async () => {
+    const input = orderBody(1);
+    const first = await post(input);
+    const payment = rows('pagamentos')[0];
+    await updateInfinitepayConfig({ pix_habilitado: false, credito_habilitado: false });
+    assert.equal((await post(input)).body.data.fluxo_pagamento, 'INFINITEPAY');
+    assert.equal((await kitchen()).length, 0);
+    assert.equal((await post(orderBody(1))).body.data.fluxo_pagamento, 'POSTERIOR');
+    provider = () => ({ ...providerResult(), capture_method: 'credit_card' });
+    await webhook(payment);
+    await webhook(payment);
+    assert.equal(rows('pagamentos').length, 1);
+    assert.equal(rows('pagamentos')[0].capture_method, 'credit_card');
+    assert.equal(notificationIds.filter(id => id === first.body.data.pedido_id).length, 1);
+    assert.equal((await kitchen()).length, 2);
+});
+
+test('pedido tradicional conserva decisão após habilitar novamente o método', async () => {
+    await updateInfinitepayConfig({ pix_habilitado: false });
+    const input = orderBody(1);
+    await post(input);
+    await updateInfinitepayConfig({ pix_habilitado: true });
+    assert.equal((await post(input)).body.data.fluxo_pagamento, 'POSTERIOR');
+    assert.equal(rows('pagamentos').length, 0);
+    assert.equal(notificationIds.length, 1);
+});
+
+async function configApi(method, input, { permission = 1, csrf = true, authenticated = true } = {}) {
+    store.prepare('UPDATE permissoes_usuarios SET permissao_id = ?').run(permission);
+    process.env.JWT_SECRET = 'isolated-test-secret';
+    const token = jwt.sign({ id: 1, cargo: 'operador' }, process.env.JWT_SECRET);
+    const headers = { Origin: 'https://frontend.example.invalid',
+        'X-Infinitepay-CSRF': csrf ? csrfToken({ cookies: { token } }) : '' };
+    return new Promise(resolve => {
+        let code = 200;
+        const req = { method, url: method === 'PATCH' ? '/ativacao' : '/', body: input,
+            cookies: authenticated ? { token } : {}, get: name => headers[name], is: type => type === 'application/json' };
+        const res = { locals: {}, set() { return this; }, status(value) { code = value; return this; },
+            json(body) { resolve({ code, body }); return this; } };
+        configRoutes.handle(req, res, error => resolve({ code: error?.statusCode || 500, body: { message: error?.message } }));
+    });
+}
+
+test('API persiste preferências, preserva credenciais e ativação global independente', async () => {
+    const initial = await configApi('GET');
+    assert.equal(initial.body.data.pix_habilitado, true);
+    assert.equal(initial.body.data.credito_habilitado, true);
+    const result = await configApi('PUT', { pix_habilitado: false, credito_habilitado: true }, { permission: 2 });
+    assert.equal(result.code, 200);
+    assert.equal(result.body.data.pix_habilitado, false);
+    assert.equal(result.body.data.credito_habilitado, true);
+    assert.equal(result.body.data.ativo, true);
+    assert.equal(rows('config_infinitepay')[0].credencial_atual_id, 1);
+    const disabled = await configApi('PATCH', { ativo: false }, { permission: 3 });
+    assert.equal(disabled.code, 200);
+    assert.equal(disabled.body.data.pix_habilitado, false);
+    assert.equal(disabled.body.data.credito_habilitado, true);
+    for (const method of [1, 2]) assert.equal((await post(orderBody(method))).body.data.fluxo_pagamento, 'POSTERIOR');
+    assert.equal((await readPublicConfig()).pix_habilitado, false);
+    assert.equal((await readPublicConfig()).credito_habilitado, true);
+    assert.equal(requests.length, 0);
+});
+
+test('API mantém separação de permissões, autenticação e CSRF', async () => {
+    assert.equal((await configApi('GET', undefined, { authenticated: false })).code, 401);
+    for (const permission of [1, 3]) {
+        assert.equal((await configApi('PUT', { pix_habilitado: false }, { permission })).code, 403);
+    }
+    assert.equal((await configApi('PATCH', { ativo: false }, { permission: 2 })).code, 403);
+    assert.equal((await configApi('PUT', { pix_habilitado: false }, { permission: 2, csrf: false })).code, 403);
+    assert.equal((await configApi('PUT', { ativo: false }, { permission: 2 })).code, 400);
+    assert.equal((await configApi('PATCH', { pix_habilitado: false }, { permission: 3 })).code, 400);
+});
+
+test('API rejeita valores não booleanos sem alterar preferências', async () => {
+    for (const field of ['pix_habilitado', 'credito_habilitado']) for (const value of [null, 0, 1, 'true', 'false', [], {}]) {
+        const response = await configApi('PUT', { [field]: value }, { permission: 2 });
+        assert.equal(response.code, 400);
+    }
+    const config = await readPublicConfig();
+    assert.equal(config.pix_habilitado, true);
+    assert.equal(config.credito_habilitado, true);
+});
 
 test('meios restantes e PDV usam fluxo tradicional independente da configuração', async () => {
     configurationRead = () => { throw new Error('fluxo tradicional não deveria consultar a configuração'); };

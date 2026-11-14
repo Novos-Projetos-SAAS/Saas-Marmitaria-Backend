@@ -130,7 +130,12 @@ export const criarPedido = async (req, res, next) => {
         if (method && typeof config?.ativo !== 'boolean') {
             throw paymentError('Status do checkout InfinitePay indisponível.', 503);
         }
-        const online = config?.ativo === true;
+        if (config?.ativo === true && (typeof config.pix_habilitado !== 'boolean' || typeof config.credito_habilitado !== 'boolean')) {
+            throw paymentError('Preferências do checkout InfinitePay indisponíveis.', 503);
+        }
+        const online = !req.usuario && config?.ativo === true &&
+            ((method === 'pix' && config.pix_habilitado === true) ||
+                (method === 'credit_card' && config.credito_habilitado === true));
         if (online && !tokenHash) throw paymentError('Identificador de checkout obrigatório.', 400);
         if (!req.usuario && !tokenHash) {
             token = randomUUID();
